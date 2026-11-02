@@ -172,6 +172,7 @@ static lv_obj_t *s_sets_lbl, *s_alerts_lbl;
 static lv_obj_t *s_gate_pill, *s_gate_lbl;
 static uint32_t s_gate_armed_at, s_gate_shown_at;   /* tap once = armed (3 s), result shown 4 s */
 static bool s_gate_wait;
+static void gate_pill_tick(void);
 static char s_sets_buf[16], s_alerts_buf[16];
 static int s_unread = 0;
 static bool s_bat_charging = false;
