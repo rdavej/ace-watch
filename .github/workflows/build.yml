@@ -9,6 +9,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Free disk space
         run: |
@@ -32,3 +34,17 @@ jobs:
             build/partition_table/partition-table.bin
             build/ota_data_initial.bin
             build/flash_args
+      - name: Publish release for Wi-Fi updates (only when version.txt changes)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VER=$(tr -d '[:space:]' < version.txt)
+          if gh release view "v$VER" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "v$VER already released"
+            exit 0
+          fi
+          gh release create "v$VER" build/ace_watch.bin version.txt \
+            --repo "${{ github.repository }}" \
+            --title "Ace Watch v$VER" \
+            --notes "Firmware v$VER. The watch installs this automatically over Wi-Fi."
