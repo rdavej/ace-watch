@@ -25,6 +25,8 @@
 #include "esp_heap_caps.h"
 #include "net.h"
 
+LV_FONT_DECLARE(font_time_86);
+
 static const char *TAG = "ace_watch";
 
 /* Electric look */
@@ -315,11 +317,9 @@ static void build_ui(void)
     lv_obj_align(brand, LV_ALIGN_TOP_MID, 0, 48);
 
     /* Big time */
-    s_time = make_label(scr, &lv_font_montserrat_48, COL_WHITE);
+    /* Big clock font (86 px), drawn directly: no extra RAM needed */
+    s_time = make_label(scr, &font_time_86, COL_WHITE);
     lv_label_set_text(s_time, "--:--");
-    lv_obj_set_style_transform_scale(s_time, 460, 0);   /* ~1.8x */
-    lv_obj_set_style_transform_pivot_x(s_time, lv_pct(50), 0);
-    lv_obj_set_style_transform_pivot_y(s_time, lv_pct(50), 0);
     lv_obj_align(s_time, LV_ALIGN_CENTER, 0, -70);
 
     /* Date */
