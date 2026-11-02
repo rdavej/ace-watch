@@ -10,6 +10,7 @@
 #include "net.h"
 #include "diag.h"
 #include "settings.h"
+#include "motion.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -647,6 +648,39 @@ static void job_feed(void)
     g_feed_state = REQ_OK;
 }
 
+/* Day code (yy*1000 + day of year) -> "2026-11-02" */
+static bool day_iso(int32_t code, char *out, size_t n)
+{
+    if (code <= 0) return false;
+    struct tm t = {0};
+    t.tm_year = (int)(code / 1000) + 100;
+    t.tm_mday = (int)(code % 1000) + 1;
+    t.tm_hour = 12;
+    if (mktime(&t) < 0) return false;
+    strftime(out, n, "%Y-%m-%d", &t);
+    return true;
+}
+
+/* Send today's steps + the last 6 days to DevX (member app "Steps today") */
+static void job_steps(void)
+{
+    time_t now = time(NULL);
+    if (now < 1700000000) return;           /* clock not set yet: dates would be wrong */
+    struct tm tn;
+    localtime_r(&now, &tn);
+    char body[512], d[12];
+    int o = snprintf(body, sizeof(body), "{\"days\":[");
+    strftime(d, sizeof(d), "%Y-%m-%d", &tn);
+    o += snprintf(body + o, sizeof(body) - o, "{\"date\":\"%s\",\"steps\":%lu}", d, (unsigned long)g_steps_today);
+    for (int i = 0; i < STEP_HISTORY_DAYS && i < 6; i++) {
+        if (!day_iso(g_step_history[i].day, d, sizeof(d))) continue;
+        o += snprintf(body + o, sizeof(body) - o, ",{\"date\":\"%s\",\"steps\":%lu}", d, (unsigned long)g_step_history[i].steps);
+        if (o >= (int)sizeof(body) - 64) break;
+    }
+    snprintf(body + o, sizeof(body) - o, "]}");
+    devx_req("POST", "/api/watch/steps", body);
+}
+
 static bool queue_job(job_kind_t k, const char *id, bool on)
 {
     if (!s_jobs) return false;
@@ -1111,6 +1145,7 @@ static void net_task(void *arg)
                 g_net_phase = "DevX";
                 diag_phase("DevX");
                 job_feed();
+                job_steps();
             }
             if (g_set.live && net_has_key()) {
                 s_wifi_up = true;                   /* stay connected for Live alerts */
