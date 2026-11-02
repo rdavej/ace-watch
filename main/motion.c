@@ -21,7 +21,7 @@
 
 static const char *TAG = "motion";
 
-#define SAMPLE_MS          20      /* 50 Hz */
+#define SAMPLE_MS          40      /* 25 Hz: enough for steps, saves battery */
 #define STEP_THRESH_MG     110.0f  /* peak above the running average */
 #define STEP_MIN_MS        250     /* fastest step (running) */
 #define STEP_MAX_MS        2000    /* slower than this = not walking */
@@ -113,8 +113,8 @@ static void motion_task(void *arg)
         float mag = __builtin_sqrtf(x * x + y * y + z * z);
 
         /* ----- Steps ----- */
-        smooth += 0.35f * (mag - smooth);
-        avg += 0.02f * (smooth - avg);
+        smooth += 0.5f * (mag - smooth);
+        avg += 0.04f * (smooth - avg);
         float d = smooth - avg;
 
         if (!above && d > STEP_THRESH_MG) {
@@ -147,7 +147,7 @@ static void motion_task(void *arg)
         } else if (az > 800.0f && mag < 1300.0f) {
             up_samples++;
             /* face held up for ~0.25 s within 1.5 s of the arm being down */
-            if (up_samples == 12 && (now_ms - last_down_ms) < 1500) {
+            if (up_samples == 6 && (now_ms - last_down_ms) < 1500) {
                 g_raise_to_wake = true;
             }
         }
@@ -175,7 +175,7 @@ void motion_start(void)
     }
     qmi8658_enable_gyro(&s_imu, false);              /* not needed, saves power */
     qmi8658_set_accel_range(&s_imu, QMI8658_ACCEL_RANGE_4G);
-    qmi8658_set_accel_odr(&s_imu, QMI8658_ACCEL_ODR_62_5HZ);
+    qmi8658_set_accel_odr(&s_imu, QMI8658_ACCEL_ODR_31_25HZ);
     qmi8658_set_accel_unit_mps2(&s_imu, false); /* readings in mg */
 
     xTaskCreate(motion_task, "motion", 3072, NULL, 3, NULL);

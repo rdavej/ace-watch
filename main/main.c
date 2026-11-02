@@ -24,6 +24,7 @@
 #include "esp_app_desc.h"
 #include "esp_ota_ops.h"
 #include "esp_heap_caps.h"
+#include "esp_pm.h"
 #include "net.h"
 #include "motion.h"
 
@@ -219,13 +220,17 @@ static void power_timer_cb(lv_timer_t *t)
     }
     if (idle > SCREEN_TIMEOUT_MS && s_screen_on) {
         bsp_display_brightness_set(0);
+        lv_display_enable_invalidation(NULL, false); /* stop redrawing while dark */
         s_screen_on = false;
     } else if (idle < SCREEN_TIMEOUT_MS && !s_screen_on) {
-        bsp_display_brightness_set(SCREEN_BRIGHTNESS);
-        s_screen_on = true;
+        lv_display_enable_invalidation(NULL, true);
         update_clock();
         update_battery();
         update_steps();
+        lv_obj_invalidate(lv_screen_active());
+        lv_refr_now(NULL);                            /* fresh frame before lighting up */
+        bsp_display_brightness_set(SCREEN_BRIGHTNESS);
+        s_screen_on = true;
     }
 }
 
@@ -412,6 +417,14 @@ static void build_ui(void)
 void app_main(void)
 {
     ESP_LOGI(TAG, "Ace Watch v%s starting", esp_app_get_description()->version);
+
+    /* Power saving: slow the CPU down and nap between jobs when idle */
+    esp_pm_config_t pm = {
+        .max_freq_mhz = 160,
+        .min_freq_mhz = 40,
+        .light_sleep_enable = true,
+    };
+    if (esp_pm_configure(&pm) != ESP_OK) ESP_LOGW(TAG, "Power management not available");
 
     esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
