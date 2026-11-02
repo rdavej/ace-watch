@@ -34,7 +34,7 @@ static const char *TAG = "ace_watch";
 #define COL_TRACK   0x13203D
 #define COL_WHITE   0xE9EEF8
 
-#define SCREEN_TIMEOUT_MS  10000
+#define SCREEN_TIMEOUT_MS  20000
 #define SCREEN_BRIGHTNESS  80
 
 /* ---------- AXP2101 power chip (battery) ---------- */
