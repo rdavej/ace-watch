@@ -797,7 +797,7 @@ static void pop_hide(void)
     lv_obj_add_flag(s_dim, LV_OBJ_FLAG_HIDDEN);
 }
 
-static void pop_dismiss_cb(lv_event_t *e) { (void)e; pop_hide(); }
+static void pop_dismiss_cb(lv_event_t *e) { (void)e; s_unread = 0; pop_hide(); }   /* seen = no "ALERTS" count on the face */
 static void pop_open_cb(lv_event_t *e) { (void)e; pop_hide(); nav_go(PG_ALERTS); }
 
 static lv_obj_t *pop_button(lv_obj_t *parent, const char *txt, bool primary, lv_event_cb_t cb)
