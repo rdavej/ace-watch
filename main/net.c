@@ -6,6 +6,7 @@
  *  - Updates (OTA) come from the latest GitHub release of rdavej/ace-watch
  */
 #include "net.h"
+#include "diag.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -44,6 +45,7 @@ typedef struct {
 } wifi_net_t;
 
 volatile net_state_t g_net_state = NET_IDLE;
+volatile const char *g_net_phase = "";
 char g_net_last_sync[16] = "";
 
 static wifi_net_t s_nets[MAX_NETS];
@@ -171,6 +173,8 @@ static bool wifi_connect(void)
 
     esp_wifi_set_mode(WIFI_MODE_STA);
     if (esp_wifi_start() != ESP_OK) return false;
+    /* Gentler radio: lower peak current on battery (15 dBm is plenty indoors) */
+    esp_wifi_set_max_tx_power(60);
 
     uint16_t n = 20;
     wifi_ap_record_t *recs = calloc(n, sizeof(wifi_ap_record_t));
@@ -614,16 +618,27 @@ static void net_task(void *arg)
         }
         first = false;
 
+        g_net_phase = "Wi-Fi";
+        diag_phase("Wi-Fi");
         g_net_state = NET_CONNECTING;
         if (wifi_connect()) {
+            g_net_phase = "Time";
+            diag_phase("Time");
             g_net_state = NET_SYNCING;
             time_sync();
+            g_net_phase = "Update";
+            diag_phase("Update");
             ota_check();
+            g_net_phase = "Wi-Fi off";
+            diag_phase("Wi-Fi off");
             wifi_off();
             g_net_state = NET_OK;
         } else {
+            diag_phase("Wi-Fi off");
+            wifi_off();
             g_net_state = NET_OFFLINE;
         }
+        diag_phase("idle");
 
         EventBits_t b = xEventGroupWaitBits(s_ev, EV_SETUP_REQ, pdTRUE, pdFALSE, pdMS_TO_TICKS(SYNC_INTERVAL_MS));
         if (b & EV_SETUP_REQ) run_setup();

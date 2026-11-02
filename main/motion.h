@@ -22,5 +22,8 @@ extern volatile bool g_raise_to_wake;
 /* main.c sets this after a tap-to-wake so the watch learns the viewing angle */
 extern volatile bool g_learn_view;
 
+/* True while the arm has been lowered away from the viewing angle for ~1.5 s */
+extern volatile bool g_wrist_down;
+
 /* Start the motion sensor task (call after the display/I2C is up) */
 void motion_start(void);

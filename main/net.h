@@ -14,6 +14,9 @@ typedef enum {
 extern volatile net_state_t g_net_state;
 extern char g_net_last_sync[16];
 
+/* What the sync is doing right now: "Wi-Fi", "Time", "Update" */
+extern volatile const char *g_net_phase;
+
 /* Start the background Wi-Fi task (call after nvs_flash_init) */
 void net_start(void);
 

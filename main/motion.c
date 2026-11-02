@@ -35,6 +35,7 @@ static const char *TAG = "motion";
 volatile uint32_t g_steps_today = 0;
 volatile bool g_raise_to_wake = false;
 volatile bool g_learn_view = false;
+volatile bool g_wrist_down = false;
 step_day_t g_step_history[STEP_HISTORY_DAYS];
 
 static qmi8658_dev_t s_imu;
@@ -145,6 +146,8 @@ static void motion_task(void *arg)
     float g[3] = {0, 0, 1000};  /* smoothed gravity */
     int64_t last_away_ms = -100000;
     int view_samples = 0;
+    int away_samples = 0;
+    int down_samples = 0;
     int still_samples = 0;
     int learn_wait = 0;
 
@@ -213,10 +216,17 @@ static void motion_task(void *arg)
         /* closeness to the viewing direction: 1 = exactly, 0 = 90 degrees away */
         float c = s_view_learned ? dot3(gn, s_view) : __builtin_fabsf(gn[2]);
 
+        /* Arm lowered for ~1.5 s: lets main.c turn off a raise-woken screen */
+        down_samples = (c < 0.4f) ? down_samples + 1 : 0;
+        g_wrist_down = down_samples >= 38;
+
         if (c < 0.55f) {                 /* > ~57 degrees away: arm down / sideways */
-            last_away_ms = now_ms;
             view_samples = 0;
-        } else if (c > 0.85f) {          /* < ~32 degrees from the viewing position */
+            /* only counts as "arm was down" once held there for ~0.5 s,
+               so small wobbles near the viewing angle don't wake the screen */
+            if (++away_samples >= 12) last_away_ms = now_ms;
+        } else if (c > 0.85f) {
+            away_samples = 0;          /* < ~32 degrees from the viewing position */
             view_samples++;
             /* moved into view within 1.5 s and held for ~0.2 s */
             if (view_samples == 5 && (now_ms - last_away_ms) < 1500) {

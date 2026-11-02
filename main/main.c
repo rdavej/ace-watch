@@ -5,7 +5,8 @@
  * - Time + date (from Wi-Fi time sync; falls back to the build time)
  * - Battery % from the AXP2101 power chip
  * - Steps today + raise to wake (motion.c)
- * - Screen turns off after 10 s, tap to wake
+ * - Screen turns off after 20 s, tap or raise to wake,
+ *   lower the wrist or cover with your palm to turn it off
  * - Hold the screen 3 s to open Wi-Fi setup
  * - Updates itself over Wi-Fi (see net.c)
  */
@@ -28,6 +29,7 @@
 #include "esp_pm.h"
 #include "net.h"
 #include "motion.h"
+#include "diag.h"
 
 LV_FONT_DECLARE(font_time_86);
 
@@ -53,6 +55,8 @@ static const char *TAG = "ace_watch";
 #define AXP_REG_BAT_PERCENT 0xA4
 
 static i2c_master_dev_handle_t s_pmu = NULL;
+static i2c_master_dev_handle_t s_tp = NULL;   /* FT3168 touch chip, read for palm cover */
+#define TP_ADDR 0x38
 
 static esp_err_t pmu_read(uint8_t reg, uint8_t *val)
 {
@@ -83,6 +87,14 @@ static void pmu_init(void)
         s_pmu = NULL;
         return;
     }
+    /* Touch chip: our own handle just to read how many fingers / palm */
+    i2c_device_config_t tcfg = cfg;
+    tcfg.device_address = TP_ADDR;
+    if (i2c_master_bus_add_device(bsp_i2c_get_handle(), &tcfg, &s_tp) != ESP_OK) {
+        ESP_LOGW(TAG, "Touch chip not readable, palm cover disabled");
+        s_tp = NULL;
+    }
+
     /* Make sure the fuel gauge is on (bit 3) */
     uint8_t v;
     if (pmu_read(AXP_REG_GAUGE_CTRL, &v) == ESP_OK) {
@@ -313,6 +325,12 @@ static void battery_timer_cb(lv_timer_t *t)
     update_battery();
 
     bool plugged = usb_plugged();
+    /* Logs only when plugged in: with no laptop listening, log output can stall */
+    static int s_log_on = -1;
+    if ((int)plugged != s_log_on) {
+        s_log_on = plugged;
+        esp_log_level_set("*", plugged ? ESP_LOG_INFO : ESP_LOG_NONE);
+    }
     if (plugged && !s_was_plugged) show_charge_screen(true);
     if (!plugged && s_was_plugged) show_charge_screen(false);
     s_was_plugged = plugged;
@@ -323,37 +341,125 @@ static void battery_timer_cb(lv_timer_t *t)
     }
 }
 
-/* Screen off after inactivity, any touch wakes it */
+/* ---------- Palm cover ----------
+   FT3168 registers: 0x01 gesture, 0x02 number of touch points (low 4 bits),
+   then point 1 data. A palm shows up as 2+ points (or an invalid count). */
+static uint8_t s_tp_last[8];
+
+static int palm_check(void)
+{
+    if (!s_tp) return 0;
+    uint8_t reg = 0x01, d[8] = {0};
+    if (i2c_master_transmit_receive(s_tp, &reg, 1, d, sizeof(d), 20) != ESP_OK) return -1;
+    if (memcmp(d, s_tp_last, sizeof(d)) != 0) {
+        memcpy(s_tp_last, d, sizeof(d));
+        /* Shown in the laptop monitor so we can tune palm detection */
+        ESP_LOGI(TAG, "touch: gest %02x pts %02x | %02x %02x %02x %02x %02x %02x",
+                 d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]);
+    }
+    int pts = d[1] & 0x0F;
+    if (pts == 0) return 0;          /* nothing touching */
+    if (pts == 1) return 1;          /* one finger */
+    return 2;                        /* 2+ points or invalid count: palm */
+}
+
+/* ---------- Screen on / off ---------- */
+#define PALM_SAMPLES     3      /* x 250 ms = palm held ~0.75 s */
+#define RAISE_MIN_ON_MS  2000   /* raise-woken screen stays on at least this long */
+
+static uint32_t s_block_until = 0;  /* touches/raises before this tick can't wake the screen */
+static bool s_palm_down = false;     /* palm is covering the screen right now */
+static int s_palm_n = 0;
+static int s_clear_n = 0;
+static uint32_t s_on_since = 0;
+static bool s_on_by_raise = false;   /* screen is on because the wrist was raised */
+
+static void screen_off(void)
+{
+    if (!s_screen_on) return;
+    bsp_display_brightness_set(0);
+    lv_display_enable_invalidation(NULL, false); /* stop redrawing while dark */
+    if (s_pm_screen) esp_pm_lock_release(s_pm_screen); /* now allowed to slow down / nap */
+    s_screen_on = false;
+    s_on_by_raise = false;
+}
+
+static void screen_on(void)
+{
+    if (s_screen_on) return;
+    if (s_pm_screen) esp_pm_lock_acquire(s_pm_screen); /* full speed while visible */
+    lv_display_enable_invalidation(NULL, true);
+    update_clock();
+    update_battery();
+    update_steps();
+    lv_obj_invalidate(lv_screen_active());        /* redraws on the next frame */
+    bsp_display_brightness_set(SCREEN_BRIGHTNESS);
+    s_screen_on = true;
+    s_on_since = lv_tick_get();
+    s_on_by_raise = s_wake_by_raise;
+    /* Woken by a tap: learn how the wrist is held when looking at the watch */
+    if (!s_wake_by_raise && !s_toast_until &&
+        lv_obj_has_flag(s_charge_panel, LV_OBJ_FLAG_HIDDEN)) g_learn_view = true;
+    s_wake_by_raise = false;
+}
+
 static void power_timer_cb(lv_timer_t *t)
 {
     (void)t;
+    diag_ui_alive();   /* tell the freeze guard the screen task is running */
+    uint32_t now = lv_tick_get();
+    bool keep_on = g_net_state == NET_SETUP || g_net_state == NET_UPDATING;
+
+    /* Palm: check while the screen is on, and while covered (to see it lift) */
+    if (s_screen_on || s_palm_down) {
+        int p = palm_check();
+        if (p == 2) {
+            s_clear_n = 0;
+            if (!s_palm_down && ++s_palm_n >= PALM_SAMPLES && !keep_on) {
+                s_palm_down = true;
+                ESP_LOGI(TAG, "Palm cover: screen off");
+                screen_off();
+            }
+        } else if (p == 0) {
+            s_palm_n = 0;
+            if (s_palm_down && ++s_clear_n >= 2) {
+                s_palm_down = false;            /* palm lifted */
+                s_block_until = now + 300;      /* the lift itself doesn't wake it */
+            }
+        } else if (p == 1) {
+            s_palm_n = 0;
+        }
+    }
+    if (s_palm_down) s_block_until = now + 300;
+
+    /* Wrist raised: only matters when the screen is dark */
     if (g_raise_to_wake) {
         g_raise_to_wake = false;
-        if (!s_screen_on) s_wake_by_raise = true;
-        lv_display_trigger_activity(NULL); /* wrist raised: count as a touch */
+        if (!s_screen_on && !s_palm_down) {
+            s_wake_by_raise = true;
+            lv_display_trigger_activity(NULL);
+        }
     }
+
     uint32_t idle = lv_display_get_inactive_time(NULL);
-    if (g_net_state == NET_SETUP || g_net_state == NET_UPDATING) {
-        idle = 0; /* keep the screen on while setting up / updating */
-    }
-    if (idle > SCREEN_TIMEOUT_MS && s_screen_on) {
-        bsp_display_brightness_set(0);
-        lv_display_enable_invalidation(NULL, false); /* stop redrawing while dark */
-        if (s_pm_screen) esp_pm_lock_release(s_pm_screen); /* now allowed to slow down / nap */
-        s_screen_on = false;
-    } else if (idle < SCREEN_TIMEOUT_MS && !s_screen_on) {
-        if (s_pm_screen) esp_pm_lock_acquire(s_pm_screen); /* full speed while visible */
-        lv_display_enable_invalidation(NULL, true);
-        update_clock();
-        update_battery();
-        update_steps();
-        lv_obj_invalidate(lv_screen_active());        /* redraws on the next frame */
-        bsp_display_brightness_set(SCREEN_BRIGHTNESS);
-        s_screen_on = true;
-        /* Woken by a tap: learn how the wrist is held when looking at the watch */
-        if (!s_wake_by_raise && !s_toast_until &&
-            lv_obj_has_flag(s_charge_panel, LV_OBJ_FLAG_HIDDEN)) g_learn_view = true;
-        s_wake_by_raise = false;
+    if (keep_on) idle = 0;
+    uint32_t last_act = now - idle;
+    bool fresh = (int32_t)(last_act - s_block_until) > 0;  /* activity after the block */
+
+    if (s_screen_on) {
+        /* A touch after a raise-wake: treat it like a normal tap-wake from now on */
+        if (s_on_by_raise && (int32_t)(last_act - s_on_since) > 300) s_on_by_raise = false;
+
+        if (idle > SCREEN_TIMEOUT_MS) {
+            screen_off();
+        } else if (s_on_by_raise && g_wrist_down && !keep_on &&
+                   now - s_on_since > RAISE_MIN_ON_MS) {
+            ESP_LOGI(TAG, "Wrist lowered: screen off");
+            screen_off();
+            s_block_until = now;
+        }
+    } else if (idle < SCREEN_TIMEOUT_MS && (fresh || keep_on)) {
+        screen_on();
     }
 }
 
@@ -392,11 +498,24 @@ static void show_setup_panel(bool show)
     }
 }
 
+static uint32_t s_boot_msg_until = 0;
+static const char *s_shown_phase = NULL;
+
 static void update_status(void)
 {
     net_state_t st = g_net_state;
-    if (st == s_shown_state && strcmp(s_shown_sync, g_net_last_sync) == 0) return;
+    const char *phase = (const char *)g_net_phase;
+    bool boot_msg = g_diag_boot_msg[0] && (int32_t)(lv_tick_get() - s_boot_msg_until) < 0;
+    if (boot_msg) {
+        show_setup_panel(st == NET_SETUP);
+        label_printf(s_foot, s_foot_buf, sizeof(s_foot_buf), "%s", g_diag_boot_msg);
+        s_shown_state = (net_state_t)-1;  /* redraw normal status afterwards */
+        return;
+    }
+    if (st == s_shown_state && phase == s_shown_phase &&
+        strcmp(s_shown_sync, g_net_last_sync) == 0) return;
     s_shown_state = st;
+    s_shown_phase = phase;
     strlcpy(s_shown_sync, g_net_last_sync, sizeof(s_shown_sync));
 
     show_setup_panel(st == NET_SETUP);
@@ -408,7 +527,7 @@ static void update_status(void)
         break;
     case NET_CONNECTING:
     case NET_SYNCING:
-        label_printf(s_foot, s_foot_buf, sizeof(s_foot_buf), "v%s  " LV_SYMBOL_WIFI " syncing...", ver);
+        label_printf(s_foot, s_foot_buf, sizeof(s_foot_buf), "v%s  " LV_SYMBOL_WIFI " %s...", ver, phase);
         break;
     case NET_UPDATING:
         label_printf(s_foot, s_foot_buf, sizeof(s_foot_buf), "%s", LV_SYMBOL_DOWNLOAD " Updating... keep watch on");
@@ -446,6 +565,7 @@ static void status_timer_cb(lv_timer_t *t)
 static void long_press_cb(lv_event_t *e)
 {
     (void)e;
+    if (s_palm_down || !s_screen_on || s_palm_n > 0) return; /* a palm, not a press */
     net_request_setup();
 }
 
@@ -605,6 +725,7 @@ static void build_ui(void)
 void app_main(void)
 {
     ESP_LOGI(TAG, "Ace Watch v%s starting", esp_app_get_description()->version);
+    diag_boot();   /* black box: why did we restart last time? */
 
     /* Power saving: slow the CPU down and nap between jobs when idle */
     esp_pm_config_t pm = {
@@ -630,8 +751,10 @@ void app_main(void)
     pmu_init();
     motion_start();
 
+    diag_phase("UI");
     bsp_display_lock(0);
     build_ui();
+    s_boot_msg_until = lv_tick_get() + 15000;
     lv_refr_now(NULL);   /* draw the full first frame before Wi-Fi starts */
     bsp_display_unlock();
 
@@ -639,6 +762,9 @@ void app_main(void)
 
     /* We got this far, so this firmware works: keep it (no rollback) */
     esp_ota_mark_app_valid_cancel_rollback();
+
+    diag_start_guard();   /* restart by itself if the screen ever freezes */
+    diag_phase("idle");
 
     net_start();
 }

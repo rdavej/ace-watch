@@ -71,7 +71,7 @@ static void guard_task(void *arg)
         vTaskDelay(pdMS_TO_TICKS(2000));
         int64_t beat = s_ui_beat_us;
         if (beat && esp_timer_get_time() - beat > 10 * 1000000LL) {
-            ESP_LOGE(TAG, "Screen task stopped for 10 s during '%s': restarting", s_rtc.phase);
+            /* no logging here: a stuck log output may be the very thing that froze */
             s_rtc.froze = 1;
             s_rtc.magic = DIAG_MAGIC;
             vTaskDelay(pdMS_TO_TICKS(100));
