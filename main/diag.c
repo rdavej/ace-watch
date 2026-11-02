@@ -58,8 +58,9 @@ void diag_boot(void)
 
     if (why && r == ESP_RST_PANIC && s_rtc.crash_magic == CRASH_MAGIC) {
         s_rtc.task[sizeof(s_rtc.task) - 1] = 0;
-        snprintf(g_diag_boot_msg, sizeof(g_diag_boot_msg), "Crash: %s %08lX @%s",
-                 s_rtc.task, (unsigned long)s_rtc.pc, phase);
+        snprintf(g_diag_boot_msg, sizeof(g_diag_boot_msg), "Crash: %s %08lX %08lX c%lu @%s",
+                 s_rtc.task, (unsigned long)s_rtc.pc, (unsigned long)s_rtc.ra,
+                 (unsigned long)s_rtc.cause, phase);
         ESP_LOGW(TAG, "%s  ra %08lX cause %lu", g_diag_boot_msg,
                  (unsigned long)s_rtc.ra, (unsigned long)s_rtc.cause);
     } else if (why) {

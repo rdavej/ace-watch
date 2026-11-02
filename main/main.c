@@ -852,7 +852,10 @@ void app_main(void)
     esp_pm_config_t pm = {
         .max_freq_mhz = 160,
         .min_freq_mhz = 40,
-        .light_sleep_enable = true,
+        /* Off for now: the watch crashed in the screen task (taskLVGL) whenever it
+           napped with the screen dark (v0.3.6/0.3.7 black box). Speed scaling
+           (40 MHz when idle) still saves power. */
+        .light_sleep_enable = false,
     };
     if (esp_pm_configure(&pm) != ESP_OK) {
         ESP_LOGW(TAG, "Power management not available");
