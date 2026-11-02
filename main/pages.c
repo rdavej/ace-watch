@@ -17,6 +17,7 @@
 #include "net.h"
 #include "settings.h"
 #include "sound.h"
+#include "stopwatch.h"
 
 #define COL_BG      0x000000
 #define COL_BLUE    0x3FB8FF
@@ -465,13 +466,14 @@ static void build_settings(lv_obj_t *p)
 void page_open(int kind, lv_obj_t *scr)
 {
     page_close();
-    static const char *const TITLE[PAGE_COUNT] = { "STEPS", "DEVX ALERTS", "SWITCHES", "SETTINGS" };
+    static const char *const TITLE[PAGE_COUNT] = { "STOPWATCH", "STEPS", "DEVX ALERTS", "SWITCHES", "SETTINGS" };
     s_kind = kind;
     s_root = panel(scr, TITLE[kind]);
     s_list = NULL;
     s_status = NULL;
     s_state = -1;
     switch (kind) {
+    case PAGE_STOPWATCH: stopwatch_build(s_root); break;
     case PAGE_STEPS:    build_steps(s_root); break;
     case PAGE_ALERTS:   build_alerts(s_root); break;
     case PAGE_SWITCHES: build_switches(s_root); break;
@@ -481,6 +483,7 @@ void page_open(int kind, lv_obj_t *scr)
 
 void page_close(void)
 {
+    if (s_kind == PAGE_STOPWATCH) stopwatch_close();
     if (s_root) {
         lv_obj_delete_async(s_root);   /* may be inside one of its own events (a swipe) */
         s_root = NULL;

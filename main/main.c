@@ -34,6 +34,7 @@
 #include "sound.h"
 #include "pages.h"
 #include "settings.h"
+#include "stopwatch.h"
 
 LV_FONT_DECLARE(font_time_86);
 LV_IMAGE_DECLARE(img_devx_logo_big);
@@ -235,7 +236,12 @@ static void update_clock(void)
 
     /* Bottom row: sets in this workout, unread DevX alerts (hidden when 0) */
     int sets = workout_sets();
-    if (sets) {
+    if (stopwatch_running()) {
+        char sw[16];
+        stopwatch_text(sw, sizeof(sw));
+        label_printf(s_sets_lbl, s_sets_buf, sizeof(s_sets_buf), LV_SYMBOL_PLAY " %s", sw);
+        lv_obj_remove_flag(s_sets_lbl, LV_OBJ_FLAG_HIDDEN);
+    } else if (sets) {
         label_printf(s_sets_lbl, s_sets_buf, sizeof(s_sets_buf), "%d SET%s", sets, sets == 1 ? "" : "S");
         lv_obj_remove_flag(s_sets_lbl, LV_OBJ_FLAG_HIDDEN);
     } else {
@@ -469,8 +475,8 @@ static void screen_on(void)
     s_wake_quiet = false;
 }
 
-/* Screens, swipe left / right: Face -> Workout -> Steps -> Alerts -> Switches -> Settings */
-enum { PG_FACE, PG_WORKOUT, PG_STEPS, PG_ALERTS, PG_SWITCHES, PG_SETTINGS, PG_N };
+/* Screens, swipe left / right: Face -> Workout -> Stopwatch -> Steps -> Alerts -> Switches -> Settings */
+enum { PG_FACE, PG_WORKOUT, PG_STOPWATCH, PG_STEPS, PG_ALERTS, PG_SWITCHES, PG_SETTINGS, PG_N };
 static int s_page = PG_FACE;
 static void nav_go(int pg);
 static bool banner_check(void);
@@ -702,7 +708,7 @@ static void nav_go(int pg)
     if (pg == s_page || pg < 0 || pg >= PG_N) return;
     page_close();
     workout_show(pg == PG_WORKOUT);
-    if (pg >= PG_STEPS) page_open(pg - PG_STEPS, lv_screen_active());
+    if (pg >= PG_STOPWATCH) page_open(pg - PG_STOPWATCH, lv_screen_active());
     if (pg == PG_ALERTS) s_unread = 0;
     s_page = pg;
 }
