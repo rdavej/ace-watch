@@ -109,7 +109,7 @@ static void motion_task(void *arg)
         int64_t now_ms = esp_timer_get_time() / 1000;
 
         float x, y, z;
-        if (qmi8658_read_accel_mg(&s_imu, &x, &y, &z) != ESP_OK) continue;
+        if (qmi8658_read_accel(&s_imu, &x, &y, &z) != ESP_OK) continue;
         float mag = __builtin_sqrtf(x * x + y * y + z * z);
 
         /* ----- Steps ----- */
@@ -176,6 +176,7 @@ void motion_start(void)
     qmi8658_enable_gyro(&s_imu, false);              /* not needed, saves power */
     qmi8658_set_accel_range(&s_imu, QMI8658_ACCEL_RANGE_4G);
     qmi8658_set_accel_odr(&s_imu, QMI8658_ACCEL_ODR_62_5HZ);
+    qmi8658_set_accel_unit_mps2(&s_imu, false); /* readings in mg */
 
     xTaskCreate(motion_task, "motion", 3072, NULL, 3, NULL);
     ESP_LOGI(TAG, "Motion sensor running, %lu steps today", (unsigned long)g_steps_today);
