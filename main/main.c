@@ -39,6 +39,7 @@
 LV_FONT_DECLARE(font_time_86);
 LV_IMAGE_DECLARE(img_devx_logo_big);
 LV_IMAGE_DECLARE(img_devx_logo_small);
+LV_IMAGE_DECLARE(img_ace_small);
 
 static const char *TAG = "ace_watch";
 
@@ -851,24 +852,10 @@ static void build_banner(void)
     lv_obj_set_style_pad_column(top, 14, 0);
     lv_obj_remove_flag(top, LV_OBJ_FLAG_CLICKABLE);
 
-    /* Ace shield: outline + "A" */
-    lv_obj_t *icon = lv_obj_create(top);
-    lv_obj_remove_style_all(icon);
-    lv_obj_set_size(icon, 40, 46);
+    /* Ace (the Ace app icon) */
+    lv_obj_t *icon = lv_image_create(top);
+    lv_image_set_src(icon, &img_ace_small);
     lv_obj_remove_flag(icon, LV_OBJ_FLAG_CLICKABLE);
-    static const lv_point_precise_t shield[] = {
-        {20, 2}, {37, 8}, {37, 22}, {35, 30}, {29, 38}, {20, 44}, {11, 38}, {5, 30}, {3, 22}, {3, 8}, {20, 2}};
-    static const lv_point_precise_t letter_a[] = {{13, 27}, {20, 13}, {27, 27}};
-    static const lv_point_precise_t bar_a[] = {{16, 22}, {24, 22}};
-    const struct { const lv_point_precise_t *p; int n; uint32_t c; } parts[3] = {
-        {shield, 11, COL_BLUE}, {letter_a, 3, COL_YELLOW}, {bar_a, 2, COL_YELLOW}};
-    for (int i = 0; i < 3; i++) {
-        lv_obj_t *ln = lv_line_create(icon);
-        lv_line_set_points(ln, parts[i].p, parts[i].n);
-        lv_obj_set_style_line_width(ln, 3, 0);
-        lv_obj_set_style_line_color(ln, lv_color_hex(parts[i].c), 0);
-        lv_obj_set_style_line_rounded(ln, true, 0);
-    }
 
     lv_obj_t *txt = lv_obj_create(top);
     lv_obj_remove_style_all(txt);

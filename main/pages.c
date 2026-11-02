@@ -480,38 +480,26 @@ static void ace_btn_cb(lv_event_t *e)
     }
 }
 
+LV_IMAGE_DECLARE(img_ace_big);
+
 static void ace_shield(lv_obj_t *p, int x, int y)
 {
-    static const lv_point_precise_t shield[] = {
-        {30, 3}, {55, 12}, {55, 33}, {52, 45}, {43, 57}, {30, 66}, {17, 57}, {8, 45}, {5, 33}, {5, 12}, {30, 3}};
-    static const lv_point_precise_t a[] = {{19, 40}, {30, 19}, {41, 40}};
-    static const lv_point_precise_t bar[] = {{24, 33}, {36, 33}};
-    lv_obj_t *box = lv_obj_create(p);
-    lv_obj_remove_style_all(box);
-    lv_obj_set_size(box, 60, 70);
-    lv_obj_remove_flag(box, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_align(box, LV_ALIGN_TOP_MID, x, y);
-    const struct { const lv_point_precise_t *pt; int n; uint32_t c; } parts[3] = {
-        {shield, 11, COL_BLUE}, {a, 3, COL_YELLOW}, {bar, 2, COL_YELLOW}};
-    for (int i = 0; i < 3; i++) {
-        lv_obj_t *ln = lv_line_create(box);
-        lv_line_set_points(ln, parts[i].pt, parts[i].n);
-        lv_obj_set_style_line_width(ln, 4, 0);
-        lv_obj_set_style_line_color(ln, lv_color_hex(parts[i].c), 0);
-        lv_obj_set_style_line_rounded(ln, true, 0);
-    }
+    lv_obj_t *img = lv_image_create(p);
+    lv_image_set_src(img, &img_ace_big);
+    lv_obj_remove_flag(img, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_align(img, LV_ALIGN_TOP_MID, x, y);
 }
 
 static void build_ace(lv_obj_t *p)
 {
     if (!net_has_key()) { no_key_note(p); return; }
-    ace_shield(p, 0, 66);
+    ace_shield(p, 0, 52);
 
     /* conversation: what Ace heard + his answer (scrolls) */
     lv_obj_t *box = lv_obj_create(p);
     lv_obj_remove_style_all(box);
-    lv_obj_set_size(box, 340, 170);
-    lv_obj_align(box, LV_ALIGN_TOP_MID, 0, 146);
+    lv_obj_set_size(box, 340, 160);
+    lv_obj_align(box, LV_ALIGN_TOP_MID, 0, 156);
     lv_obj_set_scroll_dir(box, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(box, LV_SCROLLBAR_MODE_OFF);
     s_ace_text = label(box, &lv_font_montserrat_20, COL_WHITE);
