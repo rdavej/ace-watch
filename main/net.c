@@ -406,7 +406,7 @@ static void ota_check(void)
 
 /* ---------------- DevX server ---------------- */
 
-static char s_resp[2048];
+static char s_resp[1536];
 
 /* Plain-text request to the DevX server. Returns the HTTP status (or -1); reply text in s_resp. */
 static int devx_req(const char *method, const char *path, const char *json)
@@ -491,22 +491,21 @@ static void job_sw_list(void)
         g_sw_state = REQ_ERR;
         return;
     }
-    static sw_t tmp[SW_MAX];
     int n = 0;
     char *p = s_resp, *l;
     next_line(&p);                         /* ok|count */
+    xSemaphoreTake(s_lock, portMAX_DELAY);
     while ((l = next_line(&p)) && n < SW_MAX) {
         char *f[5];
         if (split(l, f, 5) < 5) continue;
-        strlcpy(tmp[n].id, f[0], sizeof(tmp[n].id));
-        tmp[n].on = f[1][0] == '1' ? 1 : f[1][0] == '0' ? 0 : -1;
-        tmp[n].online = f[2][0] == '1';
-        tmp[n].gate = f[3][0] == '1';
-        strlcpy(tmp[n].name, f[4], sizeof(tmp[n].name));
+        sw_t *d = &g_sw[n];
+        strlcpy(d->id, f[0], sizeof(d->id));
+        d->on = f[1][0] == '1' ? 1 : f[1][0] == '0' ? 0 : -1;
+        d->online = f[2][0] == '1';
+        d->gate = f[3][0] == '1';
+        strlcpy(d->name, f[4], sizeof(d->name));
         n++;
     }
-    xSemaphoreTake(s_lock, portMAX_DELAY);
-    memcpy(g_sw, tmp, sizeof(sw_t) * n);
     g_sw_n = n;
     g_sw_rev++;
     xSemaphoreGive(s_lock);
@@ -550,28 +549,27 @@ static void job_gate(void)
 static void job_feed(void)
 {
     g_feed_state = REQ_BUSY;
-    int st = devx_req("GET", "/api/watch/feed?since=0", NULL);
+    int st = devx_req("GET", "/api/watch/feed?since=0&n=8", NULL);
     if (st != 200 || strncmp(s_resp, "ok|", 3) != 0) {
         g_feed_state = REQ_ERR;
         return;
     }
-    static feed_t tmp[FEED_MAX];
     int n = 0, fresh = 0;
     int64_t newest = s_feed_seen;
     char *p = s_resp, *l;
     next_line(&p);                         /* ok|server time */
+    xSemaphoreTake(s_lock, portMAX_DELAY);
     while ((l = next_line(&p)) && n < FEED_MAX) {
         char *f[3];
         if (split(l, f, 3) < 3) continue;
-        tmp[n].at = strtoll(f[0], NULL, 10);
-        strlcpy(tmp[n].title, f[1], sizeof(tmp[n].title));
-        strlcpy(tmp[n].body, f[2], sizeof(tmp[n].body));
-        if (tmp[n].at > s_feed_seen) fresh++;
-        if (tmp[n].at > newest) newest = tmp[n].at;
+        feed_t *d = &g_feed[n];
+        d->at = strtoll(f[0], NULL, 10);
+        strlcpy(d->title, f[1], sizeof(d->title));
+        strlcpy(d->body, f[2], sizeof(d->body));
+        if (d->at > s_feed_seen) fresh++;
+        if (d->at > newest) newest = d->at;
         n++;
     }
-    xSemaphoreTake(s_lock, portMAX_DELAY);
-    memcpy(g_feed, tmp, sizeof(feed_t) * n);
     g_feed_n = n;
     g_feed_rev++;
     /* first ever fetch: don't buzz for old ones */

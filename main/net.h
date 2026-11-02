@@ -37,11 +37,11 @@ typedef struct {
     bool gate;
 } sw_t;
 
-#define FEED_MAX 10
+#define FEED_MAX 8
 typedef struct {
     int64_t at;       /* server time, ms */
     char title[41];
-    char body[121];
+    char body[101];
 } feed_t;
 
 /* Read these while holding net_lock() */

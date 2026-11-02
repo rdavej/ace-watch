@@ -102,7 +102,7 @@ static void sound_task(void *arg)
 void sound_start(void)
 {
     s_q = xQueueCreate(4, sizeof(sound_t));
-    xTaskCreate(sound_task, "sound", 4096, NULL, 4, NULL);
+    xTaskCreate(sound_task, "sound", 3072, NULL, 4, NULL);
 }
 
 void sound_play(sound_t s)
