@@ -227,8 +227,7 @@ static void power_timer_cb(lv_timer_t *t)
         update_clock();
         update_battery();
         update_steps();
-        lv_obj_invalidate(lv_screen_active());
-        lv_refr_now(NULL);                            /* fresh frame before lighting up */
+        lv_obj_invalidate(lv_screen_active());        /* redraws on the next frame */
         bsp_display_brightness_set(SCREEN_BRIGHTNESS);
         s_screen_on = true;
     }
