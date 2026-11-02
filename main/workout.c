@@ -110,7 +110,9 @@ static void preset_cb(lv_event_t *e)
 static void ring_cb(lv_event_t *e)
 {
     (void)e;
-    start_rest();                      /* tap the ring: start / restart rest */
+    /* tap the ring to start a rest; while resting, taps do nothing
+       (tapping to keep the screen awake must not restart the countdown) */
+    if (!s_rest_end_us) start_rest();
 }
 
 static void done_cb(lv_event_t *e)

@@ -412,9 +412,36 @@ static int s_clear_n = 0;
 static uint32_t s_on_since = 0;
 static bool s_on_by_raise = false;   /* screen is on because the wrist was raised */
 
+/* Touch shield: an invisible layer over everything while the screen is dark and until the
+   waking finger lifts, so the tap that wakes the watch never presses a button underneath
+   (it was restarting the rest timer, and could have flipped a light switch). */
+static lv_obj_t *s_shield;
+
+static void shield_up(void)
+{
+    if (!s_shield) {
+        s_shield = lv_obj_create(lv_layer_top());
+        lv_obj_remove_style_all(s_shield);
+        lv_obj_set_size(s_shield, LV_PCT(100), LV_PCT(100));
+        lv_obj_add_flag(s_shield, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_remove_flag(s_shield, LV_OBJ_FLAG_GESTURE_BUBBLE | LV_OBJ_FLAG_EVENT_BUBBLE);
+    }
+    lv_obj_remove_flag(s_shield, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(s_shield);
+}
+
+static void shield_check(void)
+{
+    if (!s_shield || lv_obj_has_flag(s_shield, LV_OBJ_FLAG_HIDDEN) || !s_screen_on) return;
+    lv_indev_t *in = bsp_display_get_input_dev();
+    bool up = !in || lv_indev_get_state(in) == LV_INDEV_STATE_RELEASED;
+    if (up && lv_tick_elaps(s_on_since) > 400) lv_obj_add_flag(s_shield, LV_OBJ_FLAG_HIDDEN);
+}
+
 static void screen_off(void)
 {
     if (!s_screen_on) return;
+    shield_up();
     bsp_display_brightness_set(0);
     lv_display_enable_invalidation(NULL, false); /* stop redrawing while dark */
     if (s_pm_screen) esp_pm_lock_release(s_pm_screen); /* now allowed to slow down / nap */
@@ -518,6 +545,7 @@ static void power_timer_cb(lv_timer_t *t)
         }
     }
     if (s_screen_on) page_tick();
+    shield_check();
 
     /* Wrist raised: only matters when the screen is dark */
     if (g_raise_to_wake) {
