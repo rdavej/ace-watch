@@ -3,7 +3,8 @@
  *   - Rest ring: counts down the rest between sets
  *   - Presets: 60 s / 90 s / 2 min (tap to pick; restarts a running rest)
  *   - SET DONE: adds a set and starts the rest
- *   - Hold SET DONE 3 s: end the workout (resets sets + clock)
+ *   - Ring: tap to start a rest; while resting, tap twice to skip it
+ *   - END (tap twice): stops the workout clock, shows the total, resets
  *   - Workout clock starts with the first set
  */
 #include "workout.h"
@@ -31,7 +32,10 @@ static lv_obj_t *s_elapsed, *s_sets, *s_arc, *s_count, *s_caption;
 static lv_obj_t *s_pbtn[3], *s_plbl[3];
 static lv_obj_t *s_done_btn;
 
-static char s_elapsed_buf[12], s_sets_buf[16], s_count_buf[8], s_caption_buf[16];
+static char s_elapsed_buf[12], s_sets_buf[16], s_count_buf[12], s_caption_buf[24], s_end_buf[8];
+static lv_obj_t *s_end_btn, *s_end_lbl;
+static int64_t s_end_armed_us = 0;   /* END tapped once: tap again to confirm */
+static int64_t s_skip_armed_us = 0;  /* ring tapped once while resting */
 
 static int s_preset = 1;            /* 90 s */
 static int s_set_count = 0;
@@ -39,7 +43,6 @@ static int64_t s_start_us = 0;      /* workout start, 0 = not started */
 static int64_t s_rest_end_us = 0;   /* 0 = not resting */
 static int s_rest_total = 90;
 static int64_t s_go_until_us = 0;   /* showing "GO!" */
-static bool s_ended_by_hold = false;
 static int s_last_tick = -1;      /* last countdown second that beeped */
 
 static int64_t now_us(void) { return esp_timer_get_time(); }
@@ -110,34 +113,65 @@ static void preset_cb(lv_event_t *e)
 static void ring_cb(lv_event_t *e)
 {
     (void)e;
-    /* tap the ring to start a rest; while resting, taps do nothing
-       (tapping to keep the screen awake must not restart the countdown) */
-    if (!s_rest_end_us) start_rest();
+    if (!s_rest_end_us) { start_rest(); return; }
+    /* resting: one tap never restarts it; a second tap within 3 s skips the rest */
+    if (s_skip_armed_us && now_us() < s_skip_armed_us) {
+        s_skip_armed_us = 0;
+        s_rest_end_us = 0;
+        show_idle();
+    } else {
+        s_skip_armed_us = now_us() + 3000000;
+        set_static(s_caption, s_caption_buf, sizeof(s_caption_buf), "TAP AGAIN TO SKIP");
+    }
 }
 
 static void done_cb(lv_event_t *e)
 {
-    lv_event_code_t code = lv_event_get_code(e);
-    if (code == LV_EVENT_LONG_PRESSED) {
-        /* hold 3 s: end workout */
-        s_set_count = 0;
-        s_start_us = 0;
-        s_rest_end_us = 0;
-        s_go_until_us = 0;
-        s_ended_by_hold = true;
-        set_static(s_sets, s_sets_buf, sizeof(s_sets_buf), "0 SETS");
-        set_static(s_elapsed, s_elapsed_buf, sizeof(s_elapsed_buf), "0:00");
-        show_idle();
+    (void)e;
+    s_set_count++;
+    char t[16];
+    snprintf(t, sizeof(t), "%d SET%s", s_set_count, s_set_count == 1 ? "" : "S");
+    set_static(s_sets, s_sets_buf, sizeof(s_sets_buf), t);
+    start_rest();
+}
+
+static void end_style(bool armed)
+{
+    set_static(s_end_lbl, s_end_buf, sizeof(s_end_buf), armed ? "SURE?" : "END");
+    lv_obj_set_style_bg_color(s_end_btn, lv_color_hex(armed ? COL_YELLOW : COL_BG), 0);
+    lv_obj_set_style_text_color(s_end_lbl, lv_color_hex(armed ? COL_DARK : COL_GREY), 0);
+}
+
+/* END: tap once ("SURE?"), tap again within 3 s to finish the workout */
+static void end_cb(lv_event_t *e)
+{
+    (void)e;
+    int64_t now = now_us();
+    if (!s_start_us && !s_rest_end_us) return;            /* nothing running */
+    if (!s_end_armed_us || now > s_end_armed_us) {
+        s_end_armed_us = now + 3000000;
+        end_style(true);
         return;
     }
-    if (code == LV_EVENT_CLICKED) {
-        if (s_ended_by_hold) { s_ended_by_hold = false; return; } /* release after the hold */
-        s_set_count++;
-        char t[16];
-        snprintf(t, sizeof(t), "%d SET%s", s_set_count, s_set_count == 1 ? "" : "S");
-        set_static(s_sets, s_sets_buf, sizeof(s_sets_buf), t);
-        start_rest();
-    }
+    s_end_armed_us = 0;
+    end_style(false);
+    /* summary: total time big in the ring, sets underneath, for 10 s */
+    int sec = s_start_us ? (int)((now - s_start_us) / 1000000) : 0;
+    char t[24];
+    if (sec >= 3600) snprintf(t, sizeof(t), "%d:%02d:%02d", sec / 3600, sec / 60 % 60, sec % 60);
+    else snprintf(t, sizeof(t), "%d:%02d", sec / 60, sec % 60);
+    set_static(s_count, s_count_buf, sizeof(s_count_buf), t);
+    snprintf(t, sizeof(t), "DONE - %d SET%s", s_set_count, s_set_count == 1 ? "" : "S");
+    set_static(s_caption, s_caption_buf, sizeof(s_caption_buf), t);
+    lv_arc_set_value(s_arc, 1000);
+    ring_color(COL_YELLOW);
+    s_set_count = 0;
+    s_start_us = 0;
+    s_rest_end_us = 0;
+    s_skip_armed_us = 0;
+    s_go_until_us = now + GO_SHOW_MS * 1000LL;   /* back to idle after 10 s */
+    set_static(s_sets, s_sets_buf, sizeof(s_sets_buf), "0 SETS");
+    set_static(s_elapsed, s_elapsed_buf, sizeof(s_elapsed_buf), "0:00");
 }
 
 int workout_sets(void) { return s_set_count; }
@@ -146,6 +180,12 @@ bool workout_tick(void)
 {
     bool finished = false;
     int64_t now = now_us();
+
+    if (s_end_armed_us && now > s_end_armed_us) { s_end_armed_us = 0; end_style(false); }
+    if (s_skip_armed_us && now > s_skip_armed_us) {
+        s_skip_armed_us = 0;
+        if (s_rest_end_us) set_static(s_caption, s_caption_buf, sizeof(s_caption_buf), "REST");
+    }
 
     if (s_start_us) {
         int sec = (int)((now - s_start_us) / 1000000);
@@ -213,11 +253,25 @@ void workout_build(lv_obj_t *scr)
     /* Clock + sets */
     s_elapsed = label(s_panel, &lv_font_montserrat_24, COL_WHITE);
     set_static(s_elapsed, s_elapsed_buf, sizeof(s_elapsed_buf), "0:00");
-    lv_obj_align(s_elapsed, LV_ALIGN_TOP_MID, -70, 70);
+    lv_obj_align(s_elapsed, LV_ALIGN_TOP_MID, -110, 72);
 
     s_sets = label(s_panel, &lv_font_montserrat_24, COL_YELLOW);
     set_static(s_sets, s_sets_buf, sizeof(s_sets_buf), "0 SETS");
-    lv_obj_align(s_sets, LV_ALIGN_TOP_MID, 70, 70);
+    lv_obj_align(s_sets, LV_ALIGN_TOP_MID, 4, 72);
+
+    /* END: stop the workout (tap twice) */
+    s_end_btn = lv_obj_create(s_panel);
+    lv_obj_remove_style_all(s_end_btn);
+    lv_obj_set_size(s_end_btn, 84, 38);
+    lv_obj_set_style_radius(s_end_btn, 19, 0);
+    lv_obj_set_style_border_width(s_end_btn, 2, 0);
+    lv_obj_set_style_border_color(s_end_btn, lv_color_hex(COL_TRACK), 0);
+    lv_obj_set_style_bg_opa(s_end_btn, LV_OPA_COVER, 0);
+    lv_obj_align(s_end_btn, LV_ALIGN_TOP_MID, 118, 68);
+    lv_obj_add_event_cb(s_end_btn, end_cb, LV_EVENT_CLICKED, NULL);
+    s_end_lbl = label(s_end_btn, &lv_font_montserrat_16, COL_GREY);
+    lv_obj_center(s_end_lbl);
+    end_style(false);
 
     /* Rest ring */
     s_arc = lv_arc_create(s_panel);
@@ -278,7 +332,6 @@ void workout_build(lv_obj_t *scr)
     lv_obj_set_style_bg_color(s_done_btn, lv_color_hex(0xC9A42F), LV_STATE_PRESSED);
     lv_obj_align(s_done_btn, LV_ALIGN_BOTTOM_MID, 0, -34);
     lv_obj_add_event_cb(s_done_btn, done_cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_add_event_cb(s_done_btn, done_cb, LV_EVENT_LONG_PRESSED, NULL);
     lv_obj_t *dl = label(s_done_btn, &lv_font_montserrat_24, COL_DARK);
     lv_label_set_text(dl, LV_SYMBOL_PLUS "  SET DONE");
     lv_obj_center(dl);
