@@ -166,7 +166,10 @@ static lv_obj_t *s_time;
 static lv_obj_t *s_date;
 static lv_obj_t *s_bat_label;
 static lv_obj_t *s_steps;
-static lv_obj_t *s_steps_bar;
+static lv_obj_t *s_ring;          /* steps ring around the face */
+static lv_obj_t *s_sets_lbl, *s_alerts_lbl;
+static char s_sets_buf[16], s_alerts_buf[16];
+static int s_unread = 0;          /* DevX alerts not looked at yet */
 static uint32_t s_shown_steps = UINT32_MAX;
 static bool s_steps_ready = false; /* false until the first update after boot */
 static lv_obj_t *s_foot;
@@ -223,7 +226,22 @@ static void update_clock(void)
     static const char *wd[] = {"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"};
     static const char *mo[] = {"JAN", "FEB", "MAR", "APR", "MAY", "JUN",
                                "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"};
-    label_printf(s_date, s_date_buf, sizeof(s_date_buf), "%s  %d %s", wd[t.tm_wday], t.tm_mday, mo[t.tm_mon]);
+    label_printf(s_date, s_date_buf, sizeof(s_date_buf), "%s %d %s", wd[t.tm_wday], t.tm_mday, mo[t.tm_mon]);
+
+    /* Bottom row: sets in this workout, unread DevX alerts (hidden when 0) */
+    int sets = workout_sets();
+    if (sets) {
+        label_printf(s_sets_lbl, s_sets_buf, sizeof(s_sets_buf), "%d SET%s", sets, sets == 1 ? "" : "S");
+        lv_obj_remove_flag(s_sets_lbl, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(s_sets_lbl, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (s_unread) {
+        label_printf(s_alerts_lbl, s_alerts_buf, sizeof(s_alerts_buf), "%d ALERT%s", s_unread, s_unread == 1 ? "" : "S");
+        lv_obj_remove_flag(s_alerts_lbl, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(s_alerts_lbl, LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 static void update_battery(void)
@@ -240,7 +258,7 @@ static void update_battery(void)
                        pct > 30 ? LV_SYMBOL_BATTERY_2 :
                        pct > 10 ? LV_SYMBOL_BATTERY_1 : LV_SYMBOL_BATTERY_EMPTY;
     if (!charging && pct < 5) {
-        label_printf(s_bat_label, s_bat_buf, sizeof(s_bat_buf), LV_SYMBOL_WARNING " %d%%  Charge me", pct);
+        label_printf(s_bat_label, s_bat_buf, sizeof(s_bat_buf), LV_SYMBOL_WARNING " %d%% charge me", pct);
     } else {
         label_printf(s_bat_label, s_bat_buf, sizeof(s_bat_buf), "%s %d%%", icon, pct);
     }
@@ -258,12 +276,12 @@ static void update_steps(void)
     } else {
         label_printf(s_steps, s_steps_buf, sizeof(s_steps_buf), "%lu", (unsigned long)n);
     }
-    lv_bar_set_value(s_steps_bar, n > STEP_GOAL ? STEP_GOAL : (int32_t)n, LV_ANIM_OFF);
+    lv_arc_set_value(s_ring, n > STEP_GOAL ? STEP_GOAL : (int32_t)n);
 
     bool first = !s_steps_ready;
     s_steps_ready = true;
     bool reached = n >= STEP_GOAL;
-    lv_obj_set_style_bg_color(s_steps_bar, lv_color_hex(reached ? COL_YELLOW : COL_BLUE), LV_PART_INDICATOR);
+    lv_obj_set_style_arc_color(s_ring, lv_color_hex(reached ? COL_YELLOW : COL_BLUE), LV_PART_INDICATOR);
     if (reached && !s_goal_done) {
         s_goal_done = true;
         if (!first && n < STEP_GOAL + 50) { /* just crossed it, not a reboot */
@@ -599,30 +617,22 @@ static void update_status(void)
 
     show_setup_panel(st == NET_SETUP);
 
-    const char *ver = esp_app_get_description()->version;
     switch (st) {
     case NET_NO_WIFI:
-        label_printf(s_foot, s_foot_buf, sizeof(s_foot_buf), "%s", "Hold screen 3s for Wi-Fi setup");
+        label_printf(s_foot, s_foot_buf, sizeof(s_foot_buf), "%s", "Hold 3 s for Wi-Fi setup");
         break;
     case NET_CONNECTING:
     case NET_SYNCING:
-        label_printf(s_foot, s_foot_buf, sizeof(s_foot_buf), "v%s  " LV_SYMBOL_WIFI " %s...", ver, phase);
+        label_printf(s_foot, s_foot_buf, sizeof(s_foot_buf), LV_SYMBOL_WIFI " %s...", phase);
         break;
     case NET_UPDATING:
         label_printf(s_foot, s_foot_buf, sizeof(s_foot_buf), "%s", LV_SYMBOL_DOWNLOAD " Updating... keep watch on");
         break;
     case NET_OFFLINE:
-        label_printf(s_foot, s_foot_buf, sizeof(s_foot_buf), "v%s  offline", ver);
+        label_printf(s_foot, s_foot_buf, sizeof(s_foot_buf), "%s", "offline");
         break;
-    case NET_OK:
-        if (g_net_last_sync[0]) {
-            label_printf(s_foot, s_foot_buf, sizeof(s_foot_buf), "v%s  " LV_SYMBOL_WIFI " %s", ver, g_net_last_sync);
-        } else {
-            label_printf(s_foot, s_foot_buf, sizeof(s_foot_buf), "v%s  " LV_SYMBOL_WIFI, ver);
-        }
-        break;
-    default:
-        label_printf(s_foot, s_foot_buf, sizeof(s_foot_buf), "ACE WATCH  v%s", ver);
+    default:   /* all fine: nothing to say, keep the face clean */
+        label_printf(s_foot, s_foot_buf, sizeof(s_foot_buf), "%s", "");
         break;
     }
 }
@@ -658,6 +668,7 @@ static void nav_go(int pg)
     page_close();
     workout_show(pg == PG_WORKOUT);
     if (pg >= PG_STEPS) page_open(pg - PG_STEPS, lv_screen_active());
+    if (pg == PG_ALERTS) s_unread = 0;
     s_page = pg;
 }
 
@@ -671,68 +682,138 @@ static void gesture_cb(lv_event_t *e)
     else if (d == LV_DIR_RIGHT) nav_go(s_page - 1);
 }
 
-/* ---------- DevX notification banner ---------- */
-static lv_obj_t *s_banner, *s_banner_title, *s_banner_body;
-static uint32_t s_banner_until;
+/* ---------- Ace pop-up: a DevX notification slides up over the face ---------- */
+static lv_obj_t *s_dim, *s_pop, *s_pop_title, *s_pop_body;
+static char s_pop_tbuf[52];
 
-static void banner_tap_cb(lv_event_t *e)
+static void pop_hide(void)
 {
-    (void)e;
-    lv_obj_add_flag(s_banner, LV_OBJ_FLAG_HIDDEN);
-    s_banner_until = 0;
-    nav_go(PG_ALERTS);
+    lv_obj_add_flag(s_pop, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(s_dim, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void pop_dismiss_cb(lv_event_t *e) { (void)e; pop_hide(); }
+static void pop_open_cb(lv_event_t *e) { (void)e; pop_hide(); nav_go(PG_ALERTS); }
+
+static lv_obj_t *pop_button(lv_obj_t *parent, const char *txt, bool primary, lv_event_cb_t cb)
+{
+    lv_obj_t *b = lv_obj_create(parent);
+    lv_obj_remove_style_all(b);
+    lv_obj_set_height(b, 46);
+    lv_obj_set_flex_grow(b, 1);
+    lv_obj_set_style_radius(b, 23, 0);
+    lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(b, lv_color_hex(primary ? COL_BLUE : COL_BG), 0);
+    lv_obj_set_style_border_width(b, primary ? 0 : 2, 0);
+    lv_obj_set_style_border_color(b, lv_color_hex(COL_TRACK), 0);
+    lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *l = make_label(b, &lv_font_montserrat_16, primary ? 0x00122B : COL_GREY);
+    lv_label_set_text(l, txt);
+    lv_obj_center(l);
+    return b;
 }
 
 static void build_banner(void)
 {
-    s_banner = lv_obj_create(lv_layer_top());
-    lv_obj_remove_style_all(s_banner);
-    lv_obj_set_size(s_banner, 360, LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_color(s_banner, lv_color_hex(0x0A1226), 0);
-    lv_obj_set_style_bg_opa(s_banner, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_color(s_banner, lv_color_hex(COL_BLUE), 0);
-    lv_obj_set_style_border_width(s_banner, 2, 0);
-    lv_obj_set_style_radius(s_banner, 24, 0);
-    lv_obj_set_style_pad_all(s_banner, 14, 0);
-    lv_obj_set_flex_flow(s_banner, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(s_banner, 4, 0);
-    lv_obj_align(s_banner, LV_ALIGN_TOP_MID, 0, 28);
-    lv_obj_add_event_cb(s_banner, banner_tap_cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *h = make_label(s_banner, &lv_font_montserrat_16, COL_YELLOW);
-    lv_label_set_text(h, LV_SYMBOL_BELL "  DEVX");
-    s_banner_title = make_label(s_banner, &lv_font_montserrat_20, COL_WHITE);
-    lv_obj_set_width(s_banner_title, LV_PCT(100));
-    lv_label_set_long_mode(s_banner_title, LV_LABEL_LONG_DOT);
-    s_banner_body = make_label(s_banner, &lv_font_montserrat_16, COL_GREY);
-    lv_obj_set_width(s_banner_body, LV_PCT(100));
-    lv_obj_set_height(s_banner_body, 40);
-    lv_label_set_long_mode(s_banner_body, LV_LABEL_LONG_DOT);
-    lv_obj_add_flag(s_banner, LV_OBJ_FLAG_HIDDEN);
+    /* dim the face behind the card; tapping it dismisses */
+    s_dim = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(s_dim);
+    lv_obj_set_size(s_dim, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_bg_color(s_dim, lv_color_hex(COL_BG), 0);
+    lv_obj_set_style_bg_opa(s_dim, LV_OPA_50, 0);
+    lv_obj_add_event_cb(s_dim, pop_dismiss_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_flag(s_dim, LV_OBJ_FLAG_HIDDEN);
+
+    s_pop = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(s_pop);
+    lv_obj_set_size(s_pop, 374, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_color(s_pop, lv_color_hex(0x0A1226), 0);
+    lv_obj_set_style_bg_opa(s_pop, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(s_pop, lv_color_hex(COL_BLUE), 0);
+    lv_obj_set_style_border_width(s_pop, 2, 0);
+    lv_obj_set_style_radius(s_pop, 28, 0);
+    lv_obj_set_style_pad_all(s_pop, 18, 0);
+    lv_obj_set_style_pad_row(s_pop, 14, 0);
+    lv_obj_set_flex_flow(s_pop, LV_FLEX_FLOW_COLUMN);
+    lv_obj_align(s_pop, LV_ALIGN_BOTTOM_MID, 0, -22);
+
+    lv_obj_t *top = lv_obj_create(s_pop);
+    lv_obj_remove_style_all(top);
+    lv_obj_set_size(top, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(top, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(top, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(top, 14, 0);
+    lv_obj_remove_flag(top, LV_OBJ_FLAG_CLICKABLE);
+
+    /* Ace shield: outline + "A" */
+    lv_obj_t *icon = lv_obj_create(top);
+    lv_obj_remove_style_all(icon);
+    lv_obj_set_size(icon, 40, 46);
+    lv_obj_remove_flag(icon, LV_OBJ_FLAG_CLICKABLE);
+    static const lv_point_precise_t shield[] = {
+        {20, 2}, {37, 8}, {37, 22}, {35, 30}, {29, 38}, {20, 44}, {11, 38}, {5, 30}, {3, 22}, {3, 8}, {20, 2}};
+    static const lv_point_precise_t letter_a[] = {{13, 27}, {20, 13}, {27, 27}};
+    static const lv_point_precise_t bar_a[] = {{16, 22}, {24, 22}};
+    const struct { const lv_point_precise_t *p; int n; uint32_t c; } parts[3] = {
+        {shield, 11, COL_BLUE}, {letter_a, 3, COL_YELLOW}, {bar_a, 2, COL_YELLOW}};
+    for (int i = 0; i < 3; i++) {
+        lv_obj_t *ln = lv_line_create(icon);
+        lv_line_set_points(ln, parts[i].p, parts[i].n);
+        lv_obj_set_style_line_width(ln, 3, 0);
+        lv_obj_set_style_line_color(ln, lv_color_hex(parts[i].c), 0);
+        lv_obj_set_style_line_rounded(ln, true, 0);
+    }
+
+    lv_obj_t *txt = lv_obj_create(top);
+    lv_obj_remove_style_all(txt);
+    lv_obj_set_flex_grow(txt, 1);
+    lv_obj_set_height(txt, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(txt, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(txt, 3, 0);
+    lv_obj_remove_flag(txt, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_t *h = make_label(txt, &lv_font_montserrat_16, COL_BLUE);
+    lv_obj_set_style_text_letter_space(h, 2, 0);
+    lv_label_set_text(h, "ACE  -  JUST NOW");
+    s_pop_title = make_label(txt, &lv_font_montserrat_20, COL_WHITE);
+    lv_obj_set_width(s_pop_title, LV_PCT(100));
+    lv_label_set_long_mode(s_pop_title, LV_LABEL_LONG_WRAP);
+    s_pop_body = make_label(txt, &lv_font_montserrat_16, COL_GREY);
+    lv_obj_set_width(s_pop_body, LV_PCT(100));
+    lv_obj_set_style_max_height(s_pop_body, 40, 0);
+    lv_label_set_long_mode(s_pop_body, LV_LABEL_LONG_DOT);
+
+    lv_obj_t *btns = lv_obj_create(s_pop);
+    lv_obj_remove_style_all(btns);
+    lv_obj_set_size(btns, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(btns, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(btns, 10, 0);
+    lv_obj_remove_flag(btns, LV_OBJ_FLAG_CLICKABLE);
+    pop_button(btns, "Dismiss", false, pop_dismiss_cb);
+    pop_button(btns, "Open", true, pop_open_cb);
+
+    lv_obj_add_flag(s_pop, LV_OBJ_FLAG_HIDDEN);
 }
 
-/* New DevX notification(s) arrived: show the newest. Returns true if shown. */
+/* New DevX notification(s) arrived: pop up the newest. Returns true if shown. */
 static bool banner_check(void)
 {
-    if (s_banner_until && (int32_t)(lv_tick_get() - s_banner_until) > 0) {
-        lv_obj_add_flag(s_banner, LV_OBJ_FLAG_HIDDEN);
-        s_banner_until = 0;
-    }
-    if (!g_feed_new || s_page == PG_ALERTS) return false;
+    if (!g_feed_new) return false;
+    if (s_page == PG_ALERTS) { g_feed_new = 0; return false; }   /* already looking at them */
     if (!net_lock(10)) return false;
     bool have = g_feed_n > 0;
+    int fresh = g_feed_new;
     if (have) {
-        int more = g_feed_new - 1;
-        static char tbuf[48];
-        if (more > 0) snprintf(tbuf, sizeof(tbuf), "%s (+%d)", g_feed[0].title, more);
-        else strlcpy(tbuf, g_feed[0].title, sizeof(tbuf));
-        lv_label_set_text(s_banner_title, tbuf);
-        lv_label_set_text(s_banner_body, g_feed[0].body);
+        if (fresh > 1) snprintf(s_pop_tbuf, sizeof(s_pop_tbuf), "%s (+%d)", g_feed[0].title, fresh - 1);
+        else strlcpy(s_pop_tbuf, g_feed[0].title, sizeof(s_pop_tbuf));
+        lv_label_set_text_static(s_pop_title, s_pop_tbuf);
+        lv_label_set_text(s_pop_body, g_feed[0].body);
     }
     g_feed_new = 0;
     net_unlock();
     if (!have) return false;
-    lv_obj_remove_flag(s_banner, LV_OBJ_FLAG_HIDDEN);
-    s_banner_until = lv_tick_get() + 8000;
+    s_unread += fresh;
+    lv_obj_remove_flag(s_dim, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_remove_flag(s_pop, LV_OBJ_FLAG_HIDDEN);
     sound_play(SOUND_NOTIFY);
     return true;
 }
@@ -804,64 +885,84 @@ static void build_ui(void)
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
     lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
 
+    /* ---- Pulse Ring face ---- */
+    /* Steps ring around the face (fills up toward the 8,000 goal) */
+    s_ring = lv_arc_create(scr);
+    lv_obj_set_size(s_ring, 370, 370);
+    lv_arc_set_rotation(s_ring, 270);
+    lv_arc_set_bg_angles(s_ring, 0, 360);
+    lv_arc_set_range(s_ring, 0, STEP_GOAL);
+    lv_arc_set_value(s_ring, 0);
+    lv_obj_remove_style(s_ring, NULL, LV_PART_KNOB);
+    lv_obj_remove_flag(s_ring, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_pad_all(s_ring, 0, 0);
+    lv_obj_set_style_arc_width(s_ring, 16, LV_PART_MAIN);
+    lv_obj_set_style_arc_width(s_ring, 16, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_color(s_ring, lv_color_hex(COL_TRACK), LV_PART_MAIN);
+    lv_obj_set_style_arc_color(s_ring, lv_color_hex(COL_BLUE), LV_PART_INDICATOR);
+    lv_obj_set_style_arc_rounded(s_ring, true, LV_PART_INDICATOR);
+    lv_obj_align(s_ring, LV_ALIGN_CENTER, 0, -10);
+
     /* Header: DevX logo + DEVX */
     lv_obj_t *hdr = lv_obj_create(scr);
     lv_obj_remove_style_all(hdr);
     lv_obj_set_size(hdr, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(hdr, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(hdr, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_column(hdr, 10, 0);
+    lv_obj_set_style_pad_column(hdr, 8, 0);
     lv_obj_remove_flag(hdr, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_align(hdr, LV_ALIGN_TOP_MID, 0, 30);
+    lv_obj_align(hdr, LV_ALIGN_TOP_MID, 0, 16);
     lv_obj_t *logo = lv_image_create(hdr);
     lv_image_set_src(logo, &img_devx_logo_small);
-    lv_obj_t *brand = make_label(hdr, &lv_font_montserrat_20, COL_BLUE);
+    lv_obj_t *brand = make_label(hdr, &lv_font_montserrat_16, COL_BLUE);
     lv_label_set_text(brand, "DEVX");
     lv_obj_set_style_text_letter_space(brand, 4, 0);
 
-    /* Battery (small, under the header) */
-    s_bat_label = make_label(scr, &lv_font_montserrat_16, COL_GREY);
-    label_printf(s_bat_label, s_bat_buf, sizeof(s_bat_buf), "%s", "");
-    lv_obj_align(s_bat_label, LV_ALIGN_TOP_MID, 0, 72);
-
-    /* Big time */
-    /* Big clock font (86 px), drawn directly: no extra RAM needed */
-    s_time = make_label(scr, &font_time_86, COL_WHITE);
-    label_printf(s_time, s_time_buf, sizeof(s_time_buf), "%s", "--:--");
-    lv_obj_align(s_time, LV_ALIGN_CENTER, 0, -62);
-
-    /* Date */
-    s_date = make_label(scr, &lv_font_montserrat_24, COL_BLUE);
+    /* Date, time, steps inside the ring */
+    s_date = make_label(scr, &lv_font_montserrat_16, COL_BLUE);
     lv_obj_set_style_text_letter_space(s_date, 3, 0);
     label_printf(s_date, s_date_buf, sizeof(s_date_buf), "%s", "");
-    lv_obj_align(s_date, LV_ALIGN_CENTER, 0, 18);
+    lv_obj_align(s_date, LV_ALIGN_CENTER, 0, -100);
 
-    /* Steps: "6,240 / 8,000 steps" + progress bar */
+    s_time = make_label(scr, &font_time_86, COL_WHITE);   /* 86 px, drawn directly: no extra RAM */
+    label_printf(s_time, s_time_buf, sizeof(s_time_buf), "%s", "--:--");
+    lv_obj_align(s_time, LV_ALIGN_CENTER, 0, -38);
+
     lv_obj_t *row = lv_obj_create(scr);
     lv_obj_remove_style_all(row);
     lv_obj_set_size(row, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
-    lv_obj_set_style_pad_column(row, 8, 0);
+    lv_obj_set_style_pad_column(row, 6, 0);
     lv_obj_remove_flag(row, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_align(row, LV_ALIGN_CENTER, 0, 84);
-
+    lv_obj_align(row, LV_ALIGN_CENTER, 0, 40);
     s_steps = make_label(row, &lv_font_montserrat_24, COL_YELLOW);
     label_printf(s_steps, s_steps_buf, sizeof(s_steps_buf), "%s", "0");
     lv_obj_t *goal = make_label(row, &lv_font_montserrat_16, COL_GREY);
-    lv_label_set_text(goal, "/ 8,000 steps");
+    lv_label_set_text(goal, "/ 8,000");
     lv_obj_set_style_pad_bottom(goal, 2, 0);
 
-    s_steps_bar = lv_bar_create(scr);
-    lv_obj_set_size(s_steps_bar, 260, 10);
-    lv_bar_set_range(s_steps_bar, 0, STEP_GOAL);
-    lv_obj_set_style_bg_color(s_steps_bar, lv_color_hex(COL_TRACK), LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(s_steps_bar, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(s_steps_bar, lv_color_hex(COL_BLUE), LV_PART_INDICATOR);
-    lv_obj_set_style_radius(s_steps_bar, 5, LV_PART_MAIN);
-    lv_obj_set_style_radius(s_steps_bar, 5, LV_PART_INDICATOR);
-    lv_obj_remove_flag(s_steps_bar, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_align(s_steps_bar, LV_ALIGN_CENTER, 0, 120);
+    lv_obj_t *sl = make_label(scr, &lv_font_montserrat_16, COL_GREY);
+    lv_obj_set_style_text_letter_space(sl, 3, 0);
+    lv_label_set_text(sl, "STEPS");
+    lv_obj_align(sl, LV_ALIGN_CENTER, 0, 70);
+
+    /* Bottom row: battery, sets this workout, unread alerts */
+    lv_obj_t *bot = lv_obj_create(scr);
+    lv_obj_remove_style_all(bot);
+    lv_obj_set_size(bot, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(bot, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(bot, 22, 0);
+    lv_obj_remove_flag(bot, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_align(bot, LV_ALIGN_BOTTOM_MID, 0, -20);
+    s_bat_label = make_label(bot, &lv_font_montserrat_16, COL_GREY);
+    label_printf(s_bat_label, s_bat_buf, sizeof(s_bat_buf), "%s", "");
+    s_sets_lbl = make_label(bot, &lv_font_montserrat_16, COL_BLUE);
+    label_printf(s_sets_lbl, s_sets_buf, sizeof(s_sets_buf), "%s", "");
+    lv_obj_add_flag(s_sets_lbl, LV_OBJ_FLAG_HIDDEN);
+    s_alerts_lbl = make_label(bot, &lv_font_montserrat_16, COL_YELLOW);
+    label_printf(s_alerts_lbl, s_alerts_buf, sizeof(s_alerts_buf), "%s", "");
+    lv_obj_add_flag(s_alerts_lbl, LV_OBJ_FLAG_HIDDEN);
 
     /* Workout screen (swipe left) */
     workout_build(scr);
@@ -933,10 +1034,12 @@ static void build_ui(void)
     lv_obj_add_flag(s_charge_panel, LV_OBJ_FLAG_HIDDEN);
 
     /* Footer */
-    s_foot = make_label(scr, &lv_font_montserrat_16, COL_GREY);
+    s_foot = make_label(scr, &lv_font_montserrat_16, COL_GREY);   /* only when there's news */
     label_printf(s_foot, s_foot_buf, sizeof(s_foot_buf), "%s", "");
-    lv_obj_set_style_text_letter_space(s_foot, 1, 0);
-    lv_obj_align(s_foot, LV_ALIGN_BOTTOM_MID, 0, -44);
+    lv_obj_set_width(s_foot, 250);
+    lv_label_set_long_mode(s_foot, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_align(s_foot, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(s_foot, LV_ALIGN_CENTER, 0, 112);
     lv_obj_move_to_index(s_foot, 0);   /* behind the workout screen */
 
     /* Hold the screen 3 s to open Wi-Fi setup */

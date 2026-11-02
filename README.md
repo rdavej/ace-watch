@@ -4,7 +4,8 @@ DevX / Ace firmware for the Waveshare ESP32-C6-Touch-AMOLED-2.06 (410 × 502 AMO
 
 ## Features
 - Startup: DevX logo with a loading bar (skipped after a crash so it's back fast)
-- DevX Pulse face: time, date, battery %, steps today / 8,000 goal (Electric blue look)
+- **Pulse Ring face:** steps ring around the edge (yellow when the 8,000 goal is reached), date, time, steps; bottom row battery · sets in this workout · unread DevX alerts. Status text only appears when there's news (syncing, offline, last restart)
+- **Ace pop-up:** a new DevX notification slides up over the face as an Ace card (Dismiss / Open) with a ding and lights the screen
 - Step counter (QMI8658): counts once 8 evenly spaced steps arrive at walking/running pace; ignores sharp jolts (combing, waving). Saved, resets at midnight, last 7 days kept
 - Raise to wake: learns your viewing angle from tap-to-wake, then wakes when you lift your wrist into it (arm must be down ~0.5 s first). Lower the wrist again and a raise-woken screen turns off after ~2 s
 - Palm cover: cover the screen with your palm to turn it off straight away

@@ -15,3 +15,6 @@ bool workout_visible(void);
 /* Call every 250 ms. Returns true once when a rest has just finished
    (the caller wakes the screen). */
 bool workout_tick(void);
+
+/* Sets done in the current workout (shown on the watch face) */
+int workout_sets(void);

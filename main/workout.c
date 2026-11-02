@@ -138,6 +138,8 @@ static void done_cb(lv_event_t *e)
     }
 }
 
+int workout_sets(void) { return s_set_count; }
+
 bool workout_tick(void)
 {
     bool finished = false;
