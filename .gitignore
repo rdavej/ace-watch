@@ -1,0 +1,10 @@
+.DS_Store
+.vscode/
+.clangd
+build/
+sdkconfig
+sdkconfig.old
+managed_components/
+dependencies.lock
+*.elf
+*.map
