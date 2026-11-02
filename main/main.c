@@ -39,6 +39,7 @@ static const char *TAG = "ace_watch";
 #define COL_GREY    0x8C9AB8
 #define COL_TRACK   0x13203D
 #define COL_WHITE   0xE9EEF8
+#define COL_RED     0xFF5A5A
 
 #define SCREEN_TIMEOUT_MS  20000
 #define SCREEN_BRIGHTNESS  80
@@ -86,6 +87,14 @@ static void pmu_init(void)
     if (pmu_read(AXP_REG_GAUGE_CTRL, &v) == ESP_OK) {
         pmu_write(AXP_REG_GAUGE_CTRL, v | 0x08);
     }
+}
+
+/* True when USB power is plugged in (VBUS good, status 1 bit 5) */
+static bool usb_plugged(void)
+{
+    uint8_t st1 = 0;
+    if (pmu_read(AXP_REG_STATUS1, &st1) != ESP_OK) return false;
+    return (st1 & 0x20) != 0;
 }
 
 /* Returns 0-100, or -1 if unknown. *charging set when charging. */
@@ -141,9 +150,25 @@ static lv_obj_t *s_bat_label;
 static lv_obj_t *s_steps;
 static lv_obj_t *s_steps_bar;
 static uint32_t s_shown_steps = UINT32_MAX;
+static bool s_steps_ready = false; /* false until the first update after boot */
 static lv_obj_t *s_foot;
 static lv_obj_t *s_setup_panel;
 static bool s_screen_on = true;
+static bool s_wake_by_raise = false;
+
+/* goal */
+static bool s_goal_done = false;
+static lv_obj_t *s_toast;
+static uint32_t s_toast_until = 0;
+
+/* charging screen */
+static lv_obj_t *s_charge_panel;
+static lv_obj_t *s_charge_pct;
+static lv_obj_t *s_plates[2][3];   /* [side][0 = inner .. 2 = outer] */
+static int s_plate_frame = 0;
+static int s_charge_pct_val = 0;
+static uint32_t s_charge_until = 0;
+static bool s_was_plugged = false;
 static net_state_t s_shown_state = (net_state_t)-1;
 static char s_shown_sync[16] = "";
 
@@ -177,7 +202,13 @@ static void update_battery(void)
                        pct > 55 ? LV_SYMBOL_BATTERY_3 :
                        pct > 30 ? LV_SYMBOL_BATTERY_2 :
                        pct > 10 ? LV_SYMBOL_BATTERY_1 : LV_SYMBOL_BATTERY_EMPTY;
-    lv_label_set_text_fmt(s_bat_label, "%s %d%%", icon, pct);
+    if (!charging && pct < 5) {
+        lv_label_set_text_fmt(s_bat_label, LV_SYMBOL_WARNING " %d%%  Charge me", pct);
+    } else {
+        lv_label_set_text_fmt(s_bat_label, "%s %d%%", icon, pct);
+    }
+    lv_obj_set_style_text_color(s_bat_label, lv_color_hex((!charging && pct < 15) ? COL_RED : COL_GREY), 0);
+    s_charge_pct_val = pct;
 }
 
 static void update_steps(void)
@@ -191,6 +222,21 @@ static void update_steps(void)
         lv_label_set_text_fmt(s_steps, "%lu", (unsigned long)n);
     }
     lv_bar_set_value(s_steps_bar, n > STEP_GOAL ? STEP_GOAL : (int32_t)n, LV_ANIM_OFF);
+
+    bool first = !s_steps_ready;
+    s_steps_ready = true;
+    bool reached = n >= STEP_GOAL;
+    lv_obj_set_style_bg_color(s_steps_bar, lv_color_hex(reached ? COL_YELLOW : COL_BLUE), LV_PART_INDICATOR);
+    if (reached && !s_goal_done) {
+        s_goal_done = true;
+        if (!first && n < STEP_GOAL + 50) { /* just crossed it, not a reboot */
+            lv_obj_remove_flag(s_toast, LV_OBJ_FLAG_HIDDEN);
+            s_toast_until = lv_tick_get() + 5000;
+            lv_display_trigger_activity(NULL);                 /* light up to celebrate */
+        }
+    } else if (!reached) {
+        s_goal_done = false;                                   /* new day */
+    }
 }
 
 static void clock_timer_cb(lv_timer_t *t)
@@ -200,10 +246,62 @@ static void clock_timer_cb(lv_timer_t *t)
     update_steps();
 }
 
+/* Barbell: plates load one by one; how many depends on the battery level */
+static void charge_anim_cb(lv_timer_t *t)
+{
+    (void)t;
+    if (!s_charge_panel || lv_obj_has_flag(s_charge_panel, LV_OBJ_FLAG_HIDDEN)) return;
+
+    int target = s_charge_pct_val >= 100 ? 3 : (s_charge_pct_val + 33) / 34; /* 1..3 plates a side */
+    if (target < 1) target = 1;
+    int shown = s_charge_pct_val >= 100 ? 3 : (s_plate_frame % (target + 2)); /* 0..target, short pause */
+    if (shown > target) shown = target;
+    for (int side = 0; side < 2; side++) {
+        for (int i = 0; i < 3; i++) {
+            if (i < shown) lv_obj_remove_flag(s_plates[side][i], LV_OBJ_FLAG_HIDDEN);
+            else lv_obj_add_flag(s_plates[side][i], LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+    s_plate_frame++;
+    lv_label_set_text_fmt(s_charge_pct, "%d%%", s_charge_pct_val);
+
+    if ((int32_t)(lv_tick_get() - s_charge_until) > 0) {
+        lv_obj_add_flag(s_charge_panel, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+static void show_charge_screen(bool show)
+{
+    if (show) {
+        s_plate_frame = 0;
+        s_charge_until = lv_tick_get() + 8000;
+        lv_obj_remove_flag(s_charge_panel, LV_OBJ_FLAG_HIDDEN);
+        lv_display_trigger_activity(NULL);
+    } else {
+        lv_obj_add_flag(s_charge_panel, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+static void charge_panel_tap_cb(lv_event_t *e)
+{
+    (void)e;
+    show_charge_screen(false);
+}
+
 static void battery_timer_cb(lv_timer_t *t)
 {
     (void)t;
     update_battery();
+
+    bool plugged = usb_plugged();
+    if (plugged && !s_was_plugged) show_charge_screen(true);
+    if (!plugged && s_was_plugged) show_charge_screen(false);
+    s_was_plugged = plugged;
+
+    if (s_toast && s_toast_until && (int32_t)(lv_tick_get() - s_toast_until) > 0) {
+        lv_obj_add_flag(s_toast, LV_OBJ_FLAG_HIDDEN);
+        s_toast_until = 0;
+    }
 }
 
 /* Screen off after inactivity, any touch wakes it */
@@ -212,6 +310,7 @@ static void power_timer_cb(lv_timer_t *t)
     (void)t;
     if (g_raise_to_wake) {
         g_raise_to_wake = false;
+        if (!s_screen_on) s_wake_by_raise = true;
         lv_display_trigger_activity(NULL); /* wrist raised: count as a touch */
     }
     uint32_t idle = lv_display_get_inactive_time(NULL);
@@ -230,6 +329,10 @@ static void power_timer_cb(lv_timer_t *t)
         lv_obj_invalidate(lv_screen_active());        /* redraws on the next frame */
         bsp_display_brightness_set(SCREEN_BRIGHTNESS);
         s_screen_on = true;
+        /* Woken by a tap: learn how the wrist is held when looking at the watch */
+        if (!s_wake_by_raise && !s_toast_until &&
+            lv_obj_has_flag(s_charge_panel, LV_OBJ_FLAG_HIDDEN)) g_learn_view = true;
+        s_wake_by_raise = false;
     }
 }
 
@@ -390,6 +493,70 @@ static void build_ui(void)
     lv_obj_remove_flag(s_steps_bar, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_align(s_steps_bar, LV_ALIGN_CENTER, 0, 120);
 
+    /* Goal reached toast */
+    s_toast = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(s_toast);
+    lv_obj_set_size(s_toast, 300, 64);
+    lv_obj_set_style_radius(s_toast, 32, 0);
+    lv_obj_set_style_bg_color(s_toast, lv_color_hex(COL_YELLOW), 0);
+    lv_obj_set_style_bg_opa(s_toast, LV_OPA_COVER, 0);
+    lv_obj_remove_flag(s_toast, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_align(s_toast, LV_ALIGN_CENTER, 0, -150);
+    lv_obj_t *tl = make_label(s_toast, &lv_font_montserrat_24, 0x00122B);
+    lv_label_set_text(tl, LV_SYMBOL_OK "  GOAL REACHED!");
+    lv_obj_center(tl);
+    lv_obj_add_flag(s_toast, LV_OBJ_FLAG_HIDDEN);
+
+    /* Charging screen: barbell loading plates */
+    s_charge_panel = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(s_charge_panel);
+    lv_obj_set_size(s_charge_panel, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_bg_color(s_charge_panel, lv_color_hex(COL_BG), 0);
+    lv_obj_set_style_bg_opa(s_charge_panel, LV_OPA_COVER, 0);
+    lv_obj_add_event_cb(s_charge_panel, charge_panel_tap_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *bar = lv_obj_create(s_charge_panel);           /* the bar */
+    lv_obj_remove_style_all(bar);
+    lv_obj_set_size(bar, 330, 12);
+    lv_obj_set_style_radius(bar, 6, 0);
+    lv_obj_set_style_bg_color(bar, lv_color_hex(0x5A6680), 0);
+    lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
+    lv_obj_align(bar, LV_ALIGN_CENTER, 0, -50);
+
+    for (int side = 0; side < 2; side++) {
+        lv_obj_t *collar = lv_obj_create(s_charge_panel);   /* collars */
+        lv_obj_remove_style_all(collar);
+        lv_obj_set_size(collar, 10, 34);
+        lv_obj_set_style_radius(collar, 3, 0);
+        lv_obj_set_style_bg_color(collar, lv_color_hex(0x8C9AB8), 0);
+        lv_obj_set_style_bg_opa(collar, LV_OPA_COVER, 0);
+        lv_obj_align(collar, LV_ALIGN_CENTER, side ? 66 : -66, -50);
+
+        static const int heights[3] = {130, 110, 88};
+        for (int i = 0; i < 3; i++) {                        /* plates, inner to outer */
+            lv_obj_t *pl = lv_obj_create(s_charge_panel);
+            lv_obj_remove_style_all(pl);
+            lv_obj_set_size(pl, 18, heights[i]);
+            lv_obj_set_style_radius(pl, 5, 0);
+            lv_obj_set_style_bg_color(pl, lv_color_hex(i == 0 ? COL_BLUE : i == 1 ? 0x2E8FD0 : 0x1F6BA8), 0);
+            lv_obj_set_style_bg_opa(pl, LV_OPA_COVER, 0);
+            int x = 86 + i * 24;
+            lv_obj_align(pl, LV_ALIGN_CENTER, side ? x : -x, -50);
+            lv_obj_add_flag(pl, LV_OBJ_FLAG_HIDDEN);
+            s_plates[side][i] = pl;
+        }
+    }
+
+    s_charge_pct = make_label(s_charge_panel, &lv_font_montserrat_48, COL_YELLOW);
+    lv_label_set_text(s_charge_pct, "");
+    lv_obj_align(s_charge_pct, LV_ALIGN_CENTER, 0, 70);
+
+    lv_obj_t *cl = make_label(s_charge_panel, &lv_font_montserrat_20, COL_BLUE);
+    lv_label_set_text(cl, LV_SYMBOL_CHARGE "  CHARGING");
+    lv_obj_set_style_text_letter_space(cl, 4, 0);
+    lv_obj_align(cl, LV_ALIGN_CENTER, 0, 130);
+    lv_obj_add_flag(s_charge_panel, LV_OBJ_FLAG_HIDDEN);
+
     /* Footer */
     s_foot = make_label(scr, &lv_font_montserrat_16, COL_GREY);
     lv_label_set_text(s_foot, "");
@@ -406,7 +573,8 @@ static void build_ui(void)
     update_steps();
 
     lv_timer_create(clock_timer_cb, 1000, NULL);
-    lv_timer_create(battery_timer_cb, 5000, NULL);
+    lv_timer_create(battery_timer_cb, 2000, NULL);
+    lv_timer_create(charge_anim_cb, 350, NULL);
     lv_timer_create(power_timer_cb, 250, NULL);
     lv_timer_create(status_timer_cb, 500, NULL);
     lv_timer_create(heap_timer_cb, 10000, NULL);

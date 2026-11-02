@@ -1,12 +1,15 @@
 /*
  * Ace Watch motion: QMI8658 accelerometer
- *  - Step counter: peaks in the acceleration, only counted when they come in a
- *    walking rhythm (4 in a row), so random arm moves don't count
- *  - Raise to wake: arm hanging -> watch face turned up
- *  - Today's steps are saved to flash every few minutes and reset at midnight
+ *  - Step counter: acceleration peaks, counted only once 8 arrive in a steady
+ *    walking/running rhythm, evenly spaced, and without sharp jolts
+ *    (so combing hair, stretching or waving don't count)
+ *  - Raise to wake: learns how you hold your wrist when you look at the watch
+ *    (from your taps), then wakes when you lift your wrist into that position
+ *  - Today's steps saved every few minutes, reset at midnight, last 7 days kept
  */
 #include "motion.h"
 
+#include <string.h>
 #include <time.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -21,18 +24,25 @@
 
 static const char *TAG = "motion";
 
-#define SAMPLE_MS          40      /* 25 Hz: enough for steps, saves battery */
+#define SAMPLE_MS          40      /* 25 Hz */
 #define STEP_THRESH_MG     110.0f  /* peak above the running average */
-#define STEP_MIN_MS        250     /* fastest step (running) */
-#define STEP_MAX_MS        2000    /* slower than this = not walking */
-#define STEPS_TO_CONFIRM   4       /* rhythm needed before counting */
+#define STEP_JOLT_MG       900.0f  /* sharper than this = arm flick, not a step */
+#define STEP_MIN_MS        280     /* ~3.5 steps/s (running) */
+#define STEP_MAX_MS        1300    /* ~0.8 steps/s (slow walk) */
+#define STEPS_TO_CONFIRM   8       /* rhythm needed before counting */
 #define SAVE_EVERY_MS      (5 * 60 * 1000)
 
 volatile uint32_t g_steps_today = 0;
 volatile bool g_raise_to_wake = false;
+volatile bool g_learn_view = false;
+step_day_t g_step_history[STEP_HISTORY_DAYS];
 
 static qmi8658_dev_t s_imu;
-static int s_day = -1; /* day-of-year the steps belong to */
+static int s_day = -1; /* day the steps belong to */
+
+/* Learned "looking at the watch" direction of gravity (unit vector) */
+static float s_view[3] = {0, 0, 1};
+static int s_view_learned = 0; /* number of taps learned from */
 
 /* ---------- Saving ---------- */
 
@@ -45,7 +55,7 @@ static int today(void)
     return (t.tm_year % 100) * 1000 + t.tm_yday; /* e.g. 26305 */
 }
 
-static void steps_load(void)
+static void motion_load(void)
 {
     nvs_handle_t h;
     if (nvs_open("steps", NVS_READONLY, &h) != ESP_OK) return;
@@ -53,6 +63,16 @@ static void steps_load(void)
     uint32_t steps = 0;
     nvs_get_i32(h, "day", &day);
     nvs_get_u32(h, "count", &steps);
+    size_t sz = sizeof(g_step_history);
+    if (nvs_get_blob(h, "hist", g_step_history, &sz) != ESP_OK) {
+        memset(g_step_history, 0, sizeof(g_step_history));
+    }
+    sz = sizeof(s_view);
+    if (nvs_get_blob(h, "view", s_view, &sz) == ESP_OK) {
+        int32_t n = 0;
+        nvs_get_i32(h, "viewn", &n);
+        s_view_learned = n;
+    }
     nvs_close(h);
 
     int d = today();
@@ -68,6 +88,17 @@ static void steps_save(void)
     if (nvs_open("steps", NVS_READWRITE, &h) != ESP_OK) return;
     nvs_set_i32(h, "day", s_day);
     nvs_set_u32(h, "count", g_steps_today);
+    nvs_set_blob(h, "hist", g_step_history, sizeof(g_step_history));
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+static void view_save(void)
+{
+    nvs_handle_t h;
+    if (nvs_open("steps", NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_blob(h, "view", s_view, sizeof(s_view));
+    nvs_set_i32(h, "viewn", s_view_learned);
     nvs_commit(h);
     nvs_close(h);
 }
@@ -81,6 +112,10 @@ static void steps_check_day(void)
         s_day = d; /* steps so far belong to today */
     } else if (d != s_day) {
         ESP_LOGI(TAG, "New day, yesterday: %lu steps", (unsigned long)g_steps_today);
+        /* Keep the last 7 days, newest first */
+        memmove(&g_step_history[1], &g_step_history[0], sizeof(step_day_t) * (STEP_HISTORY_DAYS - 1));
+        g_step_history[0].day = s_day;
+        g_step_history[0].steps = g_steps_today;
         g_steps_today = 0;
         s_day = d;
         steps_save();
@@ -89,17 +124,29 @@ static void steps_check_day(void)
 
 /* ---------- Main loop ---------- */
 
+static float dot3(const float a[3], const float b[3])
+{
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
 static void motion_task(void *arg)
 {
+    /* steps */
     float avg = 1000.0f;        /* running average of |a| (gravity ~1000 mg) */
     float smooth = 1000.0f;     /* lightly smoothed |a| */
     bool above = false;
+    float peak = 0;
+    int64_t peak_ms = 0;
     int64_t last_step_ms = 0;
+    int64_t last_gap = 0;
     int pending = 0;            /* steps waiting for rhythm confirmation */
 
     /* raise to wake */
-    int64_t last_down_ms = -100000;
-    int up_samples = 0;
+    float g[3] = {0, 0, 1000};  /* smoothed gravity */
+    int64_t last_away_ms = -100000;
+    int view_samples = 0;
+    int still_samples = 0;
+    int learn_wait = 0;
 
     int64_t last_save_ms = esp_timer_get_time() / 1000;
     uint32_t saved_steps = g_steps_today;
@@ -108,9 +155,9 @@ static void motion_task(void *arg)
         vTaskDelay(pdMS_TO_TICKS(SAMPLE_MS));
         int64_t now_ms = esp_timer_get_time() / 1000;
 
-        float x, y, z;
-        if (qmi8658_read_accel(&s_imu, &x, &y, &z) != ESP_OK) continue;
-        float mag = __builtin_sqrtf(x * x + y * y + z * z);
+        float a[3];
+        if (qmi8658_read_accel(&s_imu, &a[0], &a[1], &a[2]) != ESP_OK) continue;
+        float mag = __builtin_sqrtf(dot3(a, a));
 
         /* ----- Steps ----- */
         smooth += 0.5f * (mag - smooth);
@@ -119,36 +166,84 @@ static void motion_task(void *arg)
 
         if (!above && d > STEP_THRESH_MG) {
             above = true;
-            int64_t gap = now_ms - last_step_ms;
-            if (gap >= STEP_MIN_MS) {
-                if (gap > STEP_MAX_MS) {
-                    pending = 1;               /* rhythm broken: start again */
-                } else if (pending < STEPS_TO_CONFIRM) {
-                    pending++;
-                    if (pending == STEPS_TO_CONFIRM) {
-                        g_steps_today += STEPS_TO_CONFIRM; /* walking confirmed */
-                    }
+            peak = d;
+            peak_ms = now_ms;
+        } else if (above) {
+            if (d > peak) peak = d;
+            if (d < STEP_THRESH_MG * 0.3f) {
+                /* Peak finished: decide if it was a step */
+                above = false;
+                int64_t gap = peak_ms - last_step_ms;
+                bool jolt = peak > STEP_JOLT_MG;
+                bool in_pace = gap >= STEP_MIN_MS && gap <= STEP_MAX_MS;
+                bool even = last_gap == 0 || (gap * 10 >= last_gap * 6 && gap * 10 <= last_gap * 16);
+
+                if (jolt) {
+                    pending = 0;                   /* arm flick: start again */
+                    last_gap = 0;
+                } else if (gap < STEP_MIN_MS) {
+                    /* too soon after the last one: ignore this peak */
+                } else if (!in_pace || (pending < STEPS_TO_CONFIRM && !even)) {
+                    pending = 1;                   /* rhythm broken: this is step 1 */
+                    last_gap = 0;
+                    last_step_ms = peak_ms;
                 } else {
-                    g_steps_today++;
+                    last_gap = gap;
+                    last_step_ms = peak_ms;
+                    if (pending < STEPS_TO_CONFIRM) {
+                        pending++;
+                        if (pending == STEPS_TO_CONFIRM) {
+                            g_steps_today += STEPS_TO_CONFIRM; /* walking confirmed */
+                        }
+                    } else {
+                        g_steps_today++;
+                    }
                 }
-                last_step_ms = now_ms;
             }
-        } else if (above && d < STEP_THRESH_MG * 0.3f) {
-            above = false;
         }
 
-        /* ----- Raise to wake -----
-         * Arm down: gravity mostly sideways (|z| small).
-         * Looking at the watch: gravity through the screen (|z| large). */
-        float az = __builtin_fabsf(z);
-        if (az < 450.0f) {
-            last_down_ms = now_ms;
-            up_samples = 0;
-        } else if (az > 800.0f && mag < 1300.0f) {
-            up_samples++;
-            /* face held up for ~0.25 s within 1.5 s of the arm being down */
-            if (up_samples == 6 && (now_ms - last_down_ms) < 1500) {
+        /* ----- Raise to wake ----- */
+        for (int i = 0; i < 3; i++) g[i] += 0.3f * (a[i] - g[i]);
+        float gm = __builtin_sqrtf(dot3(g, g));
+        if (gm < 1.0f) continue;
+        float gn[3] = {g[0] / gm, g[1] / gm, g[2] / gm};
+        bool still = mag > 800.0f && mag < 1200.0f;
+        still_samples = still ? still_samples + 1 : 0;
+
+        /* closeness to the viewing direction: 1 = exactly, 0 = 90 degrees away */
+        float c = s_view_learned ? dot3(gn, s_view) : __builtin_fabsf(gn[2]);
+
+        if (c < 0.55f) {                 /* > ~57 degrees away: arm down / sideways */
+            last_away_ms = now_ms;
+            view_samples = 0;
+        } else if (c > 0.85f) {          /* < ~32 degrees from the viewing position */
+            view_samples++;
+            /* moved into view within 1.5 s and held for ~0.2 s */
+            if (view_samples == 5 && (now_ms - last_away_ms) < 1500) {
                 g_raise_to_wake = true;
+            }
+        }
+
+        /* Learn the viewing position after a tap-to-wake */
+        if (g_learn_view) {
+            g_learn_view = false;
+            learn_wait = 50; /* look for a still moment in the next 2 s */
+        }
+        if (learn_wait > 0) {
+            learn_wait--;
+            if (still_samples >= 8) {
+                learn_wait = 0;
+                if (!s_view_learned) {
+                    memcpy(s_view, gn, sizeof(s_view));
+                } else {
+                    for (int i = 0; i < 3; i++) s_view[i] = 0.7f * s_view[i] + 0.3f * gn[i];
+                    float vm = __builtin_sqrtf(dot3(s_view, s_view));
+                    for (int i = 0; i < 3; i++) s_view[i] /= vm;
+                }
+                if (s_view_learned < 1000) s_view_learned++;
+                view_save();
+                ESP_LOGI(TAG, "Learned viewing angle (%d): %.2f %.2f %.2f",
+                         s_view_learned, s_view[0], s_view[1], s_view[2]);
             }
         }
 
@@ -166,7 +261,7 @@ static void motion_task(void *arg)
 
 void motion_start(void)
 {
-    steps_load();
+    motion_load();
 
     if (bsp_i2c_init() != ESP_OK ||
         qmi8658_init(&s_imu, bsp_i2c_get_handle(), QMI8658_ADDRESS_HIGH) != ESP_OK) {
@@ -176,7 +271,7 @@ void motion_start(void)
     qmi8658_enable_gyro(&s_imu, false);              /* not needed, saves power */
     qmi8658_set_accel_range(&s_imu, QMI8658_ACCEL_RANGE_4G);
     qmi8658_set_accel_odr(&s_imu, QMI8658_ACCEL_ODR_31_25HZ);
-    qmi8658_set_accel_unit_mps2(&s_imu, false); /* readings in mg */
+    qmi8658_set_accel_unit_mps2(&s_imu, false);      /* readings in mg */
 
     xTaskCreate(motion_task, "motion", 3072, NULL, 3, NULL);
     ESP_LOGI(TAG, "Motion sensor running, %lu steps today", (unsigned long)g_steps_today);
