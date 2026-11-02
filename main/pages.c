@@ -466,7 +466,6 @@ static void build_settings(lv_obj_t *p)
 static lv_obj_t *s_ace_text, *s_ace_btn, *s_ace_lbl, *s_ace_status;
 static uint32_t s_ace_rev_shown;
 static int s_ace_state_shown = -1;
-static char s_ace_buf[1100];
 
 static void ace_btn_cb(lv_event_t *e)
 {
@@ -551,9 +550,8 @@ static void tick_ace(void)
     }
     if (s_ace_rev_shown != g_ace_rev) {
         s_ace_rev_shown = g_ace_rev;
-        if (g_ace_heard[0]) snprintf(s_ace_buf, sizeof(s_ace_buf), "\"%s\"\n\n%s", g_ace_heard, g_ace_reply);
-        else strlcpy(s_ace_buf, g_ace_reply, sizeof(s_ace_buf));
-        lv_label_set_text(s_ace_text, s_ace_buf);
+        if (g_ace_heard[0]) lv_label_set_text_fmt(s_ace_text, "\"%s\"\n\n%s", g_ace_heard, g_ace_reply);
+        else lv_label_set_text(s_ace_text, g_ace_reply);
         lv_obj_set_style_text_color(s_ace_text, lv_color_hex(g_ace_state == ACE_ERR ? COL_GREY : COL_WHITE), 0);
         lv_obj_scroll_to_y(lv_obj_get_parent(s_ace_text), 0, LV_ANIM_OFF);
     }

@@ -113,7 +113,6 @@ void sound_start(void)
 
 /* ---------- Microphone ---------- */
 static esp_codec_dev_handle_t s_mic;
-static int16_t s_mic_st[160 * 2];           /* 10 ms of stereo frames */
 
 bool sound_mic_open(void)
 {
@@ -129,12 +128,13 @@ bool sound_mic_open(void)
 
 int sound_mic_read(int16_t *mono, int frames)
 {
+    int16_t st[160 * 2];                    /* 10 ms of stereo frames (on the caller's stack, saves RAM) */
     int done = 0;
     while (done < frames) {
         int n = frames - done;
         if (n > 160) n = 160;
-        if (esp_codec_dev_read(s_mic, s_mic_st, n * 4) != ESP_CODEC_DEV_OK) break;
-        for (int i = 0; i < n; i++) mono[done + i] = (int16_t)(((int32_t)s_mic_st[2 * i] + s_mic_st[2 * i + 1]) / 2);
+        if (esp_codec_dev_read(s_mic, st, n * 4) != ESP_CODEC_DEV_OK) break;
+        for (int i = 0; i < n; i++) mono[done + i] = (int16_t)(((int32_t)st[2 * i] + st[2 * i + 1]) / 2);
         done += n;
     }
     return done;

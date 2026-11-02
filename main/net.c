@@ -427,7 +427,7 @@ static void ota_check(void)
 
 /* ---------------- DevX server ---------------- */
 
-static char s_resp[1536];
+static char s_resp[1536] __attribute__((aligned(4)));   /* also the audio buffer while talking to Ace */
 
 /* Plain-text request to the DevX server. Returns the HTTP status (or -1); reply text in s_resp. */
 /* One connection kept open while Wi-Fi is on: only the first request pays for the secure
@@ -707,7 +707,6 @@ volatile bool g_ace_hold = false;
 volatile uint32_t g_ace_rev = 0;
 char g_ace_heard[164];
 char g_ace_reply[904];
-static int16_t s_ace_pcm[800];            /* 50 ms of mono audio */
 
 #define ACE_MAX_MS 8000
 #define ACE_MIN_FREE  (28 * 1024)   /* don't start below this */
@@ -756,12 +755,13 @@ static void job_ace(void)
     int sent = 0;
     bool ok = true;
     while (g_ace_hold && esp_timer_get_time() - t0 < ACE_MAX_MS * 1000LL) {
-        int n = sound_mic_read(s_ace_pcm, 800);
+        int16_t *pcm = (int16_t *)s_resp;            /* s_resp isn't needed until the reply */
+        int n = sound_mic_read(pcm, 640);             /* 40 ms of mono audio */
         if (n <= 0) break;
         char hdr[12];
         int hl = snprintf(hdr, sizeof(hdr), "%x\r\n", n * 2);
         if (esp_http_client_write(s_cli, hdr, hl) < 0 ||
-            esp_http_client_write(s_cli, (const char *)s_ace_pcm, n * 2) < 0 ||
+            esp_http_client_write(s_cli, (const char *)pcm, n * 2) < 0 ||
             esp_http_client_write(s_cli, "\r\n", 2) < 0) { ok = false; break; }
         sent += n * 2;
         if (heap_caps_get_free_size(MALLOC_CAP_8BIT) < ACE_STOP_FREE) {   /* send what we have */
