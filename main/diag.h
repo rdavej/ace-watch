@@ -16,4 +16,4 @@ void diag_start_guard(void);
 void diag_ui_alive(void);
 
 /* e.g. "Last restart: power dip @ Wi-Fi" (empty if nothing to report) */
-extern char g_diag_boot_msg[48];
+extern char g_diag_boot_msg[64];

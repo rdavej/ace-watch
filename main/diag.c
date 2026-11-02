@@ -8,6 +8,7 @@
 #include "esp_attr.h"
 #include "esp_timer.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "esp_private/panic_internal.h"
 #include "riscv/rvruntime-frames.h"
 
@@ -23,11 +24,13 @@ typedef struct {
     uint32_t crash_magic;
     uint32_t pc, ra, cause;   /* where a crash happened */
     char task[12];            /* which task crashed */
+    uint32_t heap_kb;         /* free memory when the freeze guard fired */
+    uint32_t heap_min_kb;     /* lowest free memory since boot */
 } diag_rtc_t;
 
 static RTC_NOINIT_ATTR diag_rtc_t s_rtc;
 
-char g_diag_boot_msg[48] = "";
+char g_diag_boot_msg[64] = "";
 
 #define CRASH_MAGIC 0xC0A5DEADu
 
@@ -63,6 +66,10 @@ void diag_boot(void)
                  (unsigned long)s_rtc.cause, phase);
         ESP_LOGW(TAG, "%s  ra %08lX cause %lu", g_diag_boot_msg,
                  (unsigned long)s_rtc.ra, (unsigned long)s_rtc.cause);
+    } else if (why && s_rtc.froze) {
+        snprintf(g_diag_boot_msg, sizeof(g_diag_boot_msg), "Last restart: freeze @ %s, mem %lu/%luK", phase,
+                 (unsigned long)s_rtc.heap_kb, (unsigned long)s_rtc.heap_min_kb);
+        ESP_LOGW(TAG, "%s", g_diag_boot_msg);
     } else if (why) {
         snprintf(g_diag_boot_msg, sizeof(g_diag_boot_msg), "Last restart: %s @ %s", why, phase);
         ESP_LOGW(TAG, "%s (reset reason %d)", g_diag_boot_msg, (int)r);
@@ -88,6 +95,8 @@ static void guard_task(void *arg)
         if (beat && esp_timer_get_time() - beat > 10 * 1000000LL) {
             /* no logging here: a stuck log output may be the very thing that froze */
             s_rtc.froze = 1;
+            s_rtc.heap_kb = heap_caps_get_free_size(MALLOC_CAP_8BIT) / 1024;
+            s_rtc.heap_min_kb = heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT) / 1024;
             s_rtc.magic = DIAG_MAGIC;
             vTaskDelay(pdMS_TO_TICKS(100));
             esp_restart();

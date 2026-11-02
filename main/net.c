@@ -710,6 +710,8 @@ char g_ace_reply[904];
 static int16_t s_ace_pcm[800];            /* 50 ms of mono audio */
 
 #define ACE_MAX_MS 8000
+#define ACE_MIN_FREE  (28 * 1024)   /* don't start below this */
+#define ACE_STOP_FREE (16 * 1024)   /* stop recording early below this */
 
 static void ace_fail(const char *msg)
 {
@@ -730,6 +732,11 @@ static void job_ace(void)
         devx_req("GET", "/api/watch/feed?since=0&n=1", NULL);  /* opens the secure connection */
         if (!s_cli) { ace_fail("Can't reach DevX"); return; }
     }
+    /* Streaming audio fills Wi-Fi send buffers; leave room for the screen (it freezes without memory) */
+    unsigned fr = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+    ESP_LOGI(TAG, "Ace: start, free %u, largest %u", fr, (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+    if (fr < ACE_MIN_FREE) { ace_fail("Low memory - try again"); return; }
+    diag_phase("Ace mic");
     if (!sound_mic_open()) { ace_fail("Microphone not available"); return; }
     esp_http_client_set_url(s_cli, url);
     esp_http_client_set_method(s_cli, HTTP_METHOD_POST);
@@ -744,6 +751,7 @@ static void job_ace(void)
     }
 
     g_ace_state = ACE_LISTEN;
+    diag_phase("Ace talk");
     int64_t t0 = esp_timer_get_time();
     int sent = 0;
     bool ok = true;
@@ -756,12 +764,18 @@ static void job_ace(void)
             esp_http_client_write(s_cli, (const char *)s_ace_pcm, n * 2) < 0 ||
             esp_http_client_write(s_cli, "\r\n", 2) < 0) { ok = false; break; }
         sent += n * 2;
+        if (heap_caps_get_free_size(MALLOC_CAP_8BIT) < ACE_STOP_FREE) {   /* send what we have */
+            ESP_LOGW(TAG, "Ace: memory low (%u), stopping early", (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT));
+            break;
+        }
     }
     sound_mic_close();
     if (ok) ok = esp_http_client_write(s_cli, "0\r\n\r\n", 5) >= 0;
     if (!ok) { devx_close(); ace_fail("Connection dropped"); return; }
 
     g_ace_state = ACE_THINK;
+    diag_phase("Ace wait");
+    ESP_LOGI(TAG, "Ace: sent %d bytes, lowest free %u", sent, (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT));
     s_ev_off = true;
     esp_http_client_fetch_headers(s_cli);
     int status = esp_http_client_get_status_code(s_cli);
