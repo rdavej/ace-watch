@@ -31,6 +31,7 @@
 #include "esp_app_desc.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "esp_heap_caps.h"
 #include "lwip/sockets.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
@@ -289,8 +290,11 @@ static bool wifi_connect(void)
     return false;
 }
 
+static void devx_close(void);
+
 static void wifi_off(void)
 {
+    devx_close();
     s_connecting = false;
     esp_wifi_disconnect();
     esp_wifi_stop();
@@ -415,42 +419,84 @@ static void ota_check(void)
 static char s_resp[1536];
 
 /* Plain-text request to the DevX server. Returns the HTTP status (or -1); reply text in s_resp. */
+/* One connection kept open while Wi-Fi is on: only the first request pays for the secure
+   handshake (that's when memory is tightest), the next taps reuse it. */
+static esp_http_client_handle_t s_cli;
+static int s_resp_len;
+
+static esp_err_t devx_ev(esp_http_client_event_t *e)
+{
+    if (e->event_id == HTTP_EVENT_ON_DATA) {
+        int n = e->data_len;
+        if (s_resp_len + n > (int)sizeof(s_resp) - 1) n = (int)sizeof(s_resp) - 1 - s_resp_len;
+        if (n > 0) {
+            memcpy(s_resp + s_resp_len, e->data, n);
+            s_resp_len += n;
+        }
+    }
+    return ESP_OK;
+}
+
+static void devx_close(void)
+{
+    if (s_cli) {
+        esp_http_client_cleanup(s_cli);
+        s_cli = NULL;
+    }
+}
+
+static int devx_once(const char *url, bool post, const char *json)
+{
+    if (!s_cli) {
+        esp_http_client_config_t hc = {
+            .url = url,
+            .crt_bundle_attach = esp_crt_bundle_attach,
+            .timeout_ms = 10000,
+            .buffer_size = 1536,
+            .buffer_size_tx = 1024,
+            .keep_alive_enable = true,
+            .event_handler = devx_ev,
+        };
+        s_cli = esp_http_client_init(&hc);
+        if (!s_cli) return -1;
+        char auth[96];
+        snprintf(auth, sizeof(auth), "Bearer %s", s_key);
+        esp_http_client_set_header(s_cli, "Authorization", auth);
+    } else {
+        esp_http_client_set_url(s_cli, url);
+    }
+    esp_http_client_set_method(s_cli, post ? HTTP_METHOD_POST : HTTP_METHOD_GET);
+    if (post) {
+        esp_http_client_set_header(s_cli, "Content-Type", "application/json");
+        esp_http_client_set_post_field(s_cli, json ? json : "{}", json ? (int)strlen(json) : 2);
+    } else {
+        esp_http_client_delete_header(s_cli, "Content-Type");
+        esp_http_client_set_post_field(s_cli, NULL, 0);
+    }
+    s_resp_len = 0;
+    esp_err_t err = esp_http_client_perform(s_cli);
+    s_resp[s_resp_len] = 0;
+    if (err != ESP_OK) {
+        devx_close();   /* broken connection: start fresh next time */
+        return -1;
+    }
+    return esp_http_client_get_status_code(s_cli);
+}
+
+/* Plain-text request to the DevX server. Returns the HTTP status (or -1); reply text in s_resp. */
 static int devx_req(const char *method, const char *path, const char *json)
 {
     char url[160];
     snprintf(url, sizeof(url), "%s%s", s_srv, path);
-    char auth[96];
-    snprintf(auth, sizeof(auth), "Bearer %s", s_key);
-
-    esp_http_client_config_t hc = {
-        .url = url,
-        .crt_bundle_attach = esp_crt_bundle_attach,
-        .timeout_ms = 10000,
-        .buffer_size = 2048,
-        .buffer_size_tx = 1024,
-        .method = strcmp(method, "POST") == 0 ? HTTP_METHOD_POST : HTTP_METHOD_GET,
-    };
-    esp_http_client_handle_t c = esp_http_client_init(&hc);
-    if (!c) return -1;
-    esp_http_client_set_header(c, "Authorization", auth);
-    int wlen = json ? (int)strlen(json) : 0;
-    if (json) esp_http_client_set_header(c, "Content-Type", "application/json");
-
-    int status = -1, got = 0;
-    if (esp_http_client_open(c, wlen) == ESP_OK) {
-        if (wlen) esp_http_client_write(c, json, wlen);
-        esp_http_client_fetch_headers(c);
-        status = esp_http_client_get_status_code(c);
-        int n;
-        while (got < (int)sizeof(s_resp) - 1 &&
-               (n = esp_http_client_read(c, s_resp + got, sizeof(s_resp) - 1 - got)) > 0) {
-            got += n;
-        }
+    bool post = strcmp(method, "POST") == 0;
+    int status = devx_once(url, post, json);
+    if (status < 0) {                     /* one more try on a fresh connection */
+        vTaskDelay(pdMS_TO_TICKS(500));
+        status = devx_once(url, post, json);
     }
-    s_resp[got] = 0;
-    esp_http_client_close(c);
-    esp_http_client_cleanup(c);
-    ESP_LOGI(TAG, "%s %s -> %d", method, path, status);
+    ESP_LOGI(TAG, "%s %s -> %d (free %u, largest %u)", method, path, status,
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
     return status;
 }
 
