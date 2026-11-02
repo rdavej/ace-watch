@@ -11,12 +11,13 @@
 
 static const char *TAG = "sound";
 
-#define RATE        22050   /* same as the board's default I2S setup */
-#define CHUNK       220     /* 10 ms of samples */
+/* Same format as Waveshare's own audio example for this board: 16 kHz, 16-bit, stereo */
+#define RATE        16000
+#define CHUNK       160     /* 10 ms of frames (each frame = left + right) */
 
 static QueueHandle_t s_q;
 static esp_codec_dev_handle_t s_spk;
-static int16_t s_buf[CHUNK];
+static int16_t s_buf[CHUNK * 2];
 
 /* Play a tone (or silence when hz = 0) for ms milliseconds */
 static void tone(int hz, int ms)
@@ -30,16 +31,16 @@ static void tone(int hz, int ms)
     int chunks = ms / 10;
     for (int c = 0; c < chunks; c++) {
         for (int i = 0; i < CHUNK; i++) {
-            if (!hz) { s_buf[i] = 0; continue; }
-            s_buf[i] = sine16[(phase >> 16) & 15];
-            phase += step;
-        }
-        /* soft start/stop: avoids clicks */
-        if (hz && (c == 0 || c == chunks - 1)) {
-            for (int i = 0; i < CHUNK; i++) {
-                int k = c == 0 ? i : CHUNK - 1 - i;
-                s_buf[i] = (int16_t)((int32_t)s_buf[i] * k / CHUNK);
+            int16_t v = 0;
+            if (hz) {
+                v = sine16[(phase >> 16) & 15];
+                phase += step;
+                /* soft start/stop: avoids clicks */
+                if (c == 0) v = (int16_t)((int32_t)v * i / CHUNK);
+                else if (c == chunks - 1) v = (int16_t)((int32_t)v * (CHUNK - 1 - i) / CHUNK);
             }
+            s_buf[2 * i] = v;          /* left */
+            s_buf[2 * i + 1] = v;      /* right */
         }
         int we = esp_codec_dev_write(s_spk, s_buf, sizeof(s_buf));
         if (we != ESP_CODEC_DEV_OK && c == 0) ESP_LOGW(TAG, "Speaker write failed (%d)", we);
@@ -58,7 +59,7 @@ static void sound_task(void *arg)
         esp_codec_dev_set_out_vol(s_spk, vol);
         esp_codec_dev_sample_info_t fs = {
             .sample_rate = RATE,
-            .channel = 1,
+            .channel = 2,
             .bits_per_sample = 16,
         };
         int oe = esp_codec_dev_open(s_spk, &fs);
@@ -67,12 +68,13 @@ static void sound_task(void *arg)
             continue;
         }
         ESP_LOGI(TAG, "Playing sound %d at volume %d", (int)s, vol);
+        tone(0, 150);   /* give the speaker amplifier a moment to wake up */
 
         /* keep playing anything else queued while the speaker is on */
         do {
             switch (s) {
             case SOUND_TICK:
-                tone(1760, 60);
+                tone(1760, 90);
                 break;
             case SOUND_GO:
                 for (int i = 0; i < 3; i++) {
