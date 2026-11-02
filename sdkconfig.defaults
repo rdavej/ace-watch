@@ -6,6 +6,8 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
 
 CONFIG_BSP_I2C_NUM=0
+# The C6 has only one I2S port (the board package defaults to 1, which doesn't exist: no sound)
+CONFIG_BSP_I2S_NUM=0
 
 CONFIG_FREERTOS_HZ=1000
 CONFIG_LV_USE_CLIB_MALLOC=y
