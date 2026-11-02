@@ -53,13 +53,7 @@ static void sound_task(void *arg)
         int vol = settings_volume();
         if (vol == 0) continue;                /* muted in Settings */
 
-        if (!s_spk) {
-            s_spk = bsp_audio_codec_speaker_init();
-            if (!s_spk) {
-                ESP_LOGW(TAG, "Speaker not available");
-                continue;
-            }
-        }
+        if (!s_spk) continue;                  /* speaker didn't start at boot: stay silent */
         esp_codec_dev_set_out_vol(s_spk, vol);
         esp_codec_dev_sample_info_t fs = {
             .sample_rate = RATE,
@@ -101,6 +95,10 @@ static void sound_task(void *arg)
 
 void sound_start(void)
 {
+    /* Set up the speaker once, at start-up while memory is plentiful (not later, mid-workout
+       with Wi-Fi on). If it fails the watch simply has no sound instead of crashing. */
+    s_spk = bsp_audio_codec_speaker_init();
+    ESP_LOGI(TAG, "Speaker %s", s_spk ? "ready" : "not available - sounds off");
     s_q = xQueueCreate(4, sizeof(sound_t));
     xTaskCreate(sound_task, "sound", 3072, NULL, 4, NULL);
 }

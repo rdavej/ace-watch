@@ -51,3 +51,6 @@ CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION=y
 CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
 CONFIG_MBEDTLS_DYNAMIC_FREE_CONFIG_DATA=y
 CONFIG_MBEDTLS_DYNAMIC_FREE_CA_CERT=y
+# Board package: return errors instead of crashing the whole watch (the speaker set-up
+# crashed the watch when it hit a small error)
+CONFIG_BSP_ERROR_CHECK=n
