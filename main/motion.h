@@ -25,5 +25,8 @@ extern volatile bool g_learn_view;
 /* True while the arm has been lowered away from the viewing angle for ~1.5 s */
 extern volatile bool g_wrist_down;
 
+/* Provided by main.c: called from the motion task the moment a raise is seen */
+void motion_on_raise(void);
+
 /* Start the motion sensor task (call after the display/I2C is up) */
 void motion_start(void);

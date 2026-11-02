@@ -4,6 +4,9 @@ idf_component_register(
 
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wno-error=cpp)
 
+# Black box: catch crashes to record where they happened (diag.c)
+target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=esp_panic_handler")
+
 idf_build_get_property(build_components BUILD_COMPONENTS)
 if("lvgl__lvgl" IN_LIST build_components)
     idf_component_get_property(LVGL_LIB lvgl__lvgl COMPONENT_LIB)

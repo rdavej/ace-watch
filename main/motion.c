@@ -206,7 +206,7 @@ static void motion_task(void *arg)
         }
 
         /* ----- Raise to wake ----- */
-        for (int i = 0; i < 3; i++) g[i] += 0.3f * (a[i] - g[i]);
+        for (int i = 0; i < 3; i++) g[i] += 0.45f * (a[i] - g[i]);   /* quicker to follow the wrist */
         float gm = __builtin_sqrtf(dot3(g, g));
         if (gm < 1.0f) continue;
         float gn[3] = {g[0] / gm, g[1] / gm, g[2] / gm};
@@ -225,12 +225,13 @@ static void motion_task(void *arg)
             /* only counts as "arm was down" once held there for ~0.5 s,
                so small wobbles near the viewing angle don't wake the screen */
             if (++away_samples >= 12) last_away_ms = now_ms;
-        } else if (c > 0.85f) {
+        } else if (c > 0.8f) {
             away_samples = 0;          /* < ~32 degrees from the viewing position */
             view_samples++;
             /* moved into view within 1.5 s and held for ~0.2 s */
-            if (view_samples == 5 && (now_ms - last_away_ms) < 1500) {
+            if (view_samples == 3 && (now_ms - last_away_ms) < 1500) {
                 g_raise_to_wake = true;
+                motion_on_raise();   /* wake the screen right now, no waiting */
             }
         }
 
@@ -283,6 +284,6 @@ void motion_start(void)
     qmi8658_set_accel_odr(&s_imu, QMI8658_ACCEL_ODR_31_25HZ);
     qmi8658_set_accel_unit_mps2(&s_imu, false);      /* readings in mg */
 
-    xTaskCreate(motion_task, "motion", 3072, NULL, 3, NULL);
+    xTaskCreate(motion_task, "motion", 4096, NULL, 4, NULL);
     ESP_LOGI(TAG, "Motion sensor running, %lu steps today", (unsigned long)g_steps_today);
 }

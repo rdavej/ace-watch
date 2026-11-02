@@ -415,6 +415,20 @@ static void screen_on(void)
     s_wake_quiet = false;
 }
 
+/* Called from the motion task: light the screen straight away instead of
+   waiting for the next screen-timer tick (that wait made raise-to-wake feel slow) */
+void motion_on_raise(void)
+{
+    if (s_screen_on || s_palm_down) return;
+    if (!bsp_display_lock(100)) return;   /* the power timer will catch it instead */
+    if (!s_screen_on && !s_palm_down) {
+        s_wake_by_raise = true;
+        lv_display_trigger_activity(NULL);
+        screen_on();
+    }
+    bsp_display_unlock();
+}
+
 static void power_timer_cb(lv_timer_t *t)
 {
     (void)t;
@@ -809,6 +823,7 @@ static void build_ui(void)
     label_printf(s_foot, s_foot_buf, sizeof(s_foot_buf), "%s", "");
     lv_obj_set_style_text_letter_space(s_foot, 1, 0);
     lv_obj_align(s_foot, LV_ALIGN_BOTTOM_MID, 0, -44);
+    lv_obj_move_to_index(s_foot, 0);   /* behind the workout screen */
 
     /* Hold the screen 3 s to open Wi-Fi setup */
     lv_obj_add_event_cb(scr, long_press_cb, LV_EVENT_LONG_PRESSED, NULL);
@@ -862,7 +877,7 @@ void app_main(void)
     build_ui();
     /* Logo on a normal start; skip it after a crash/freeze so the watch is back fast */
     if (!g_diag_boot_msg[0]) build_splash();
-    s_boot_msg_until = lv_tick_get() + 15000;
+    s_boot_msg_until = lv_tick_get() + 60000;   /* 1 min, so it can be seen */
     lv_refr_now(NULL);   /* draw the full first frame before Wi-Fi starts */
     bsp_display_unlock();
 

@@ -8,6 +8,8 @@
 #include "esp_attr.h"
 #include "esp_timer.h"
 #include "esp_log.h"
+#include "esp_private/panic_internal.h"
+#include "riscv/rvruntime-frames.h"
 
 static const char *TAG = "diag";
 
@@ -18,11 +20,16 @@ typedef struct {
     uint32_t magic;
     char phase[16];
     uint32_t froze;   /* set by the freeze guard just before it restarts */
+    uint32_t crash_magic;
+    uint32_t pc, ra, cause;   /* where a crash happened */
+    char task[12];            /* which task crashed */
 } diag_rtc_t;
 
 static RTC_NOINIT_ATTR diag_rtc_t s_rtc;
 
 char g_diag_boot_msg[48] = "";
+
+#define CRASH_MAGIC 0xC0A5DEADu
 
 static volatile int64_t s_ui_beat_us = 0;
 
@@ -49,7 +56,13 @@ void diag_boot(void)
     default: break;                                                         /* power on, USB, etc. */
     }
 
-    if (why) {
+    if (why && r == ESP_RST_PANIC && s_rtc.crash_magic == CRASH_MAGIC) {
+        s_rtc.task[sizeof(s_rtc.task) - 1] = 0;
+        snprintf(g_diag_boot_msg, sizeof(g_diag_boot_msg), "Crash: %s %08lX @%s",
+                 s_rtc.task, (unsigned long)s_rtc.pc, phase);
+        ESP_LOGW(TAG, "%s  ra %08lX cause %lu", g_diag_boot_msg,
+                 (unsigned long)s_rtc.ra, (unsigned long)s_rtc.cause);
+    } else if (why) {
         snprintf(g_diag_boot_msg, sizeof(g_diag_boot_msg), "Last restart: %s @ %s", why, phase);
         ESP_LOGW(TAG, "%s (reset reason %d)", g_diag_boot_msg, (int)r);
     } else {
@@ -57,6 +70,7 @@ void diag_boot(void)
     }
 
     s_rtc.froze = 0;
+    s_rtc.crash_magic = 0;
     diag_phase("boot");
 }
 
@@ -84,4 +98,27 @@ void diag_start_guard(void)
 {
     diag_ui_alive();
     xTaskCreate(guard_task, "guard", 2048, NULL, 10, NULL);
+}
+
+/* Runs when the watch crashes, just before the normal crash handler:
+   note which task crashed and where, so it can be shown after the restart.
+   (Linked in with -Wl,--wrap=esp_panic_handler, see main/CMakeLists.txt) */
+extern void __real_esp_panic_handler(panic_info_t *info);
+
+void IRAM_ATTR __wrap_esp_panic_handler(panic_info_t *info)
+{
+    s_rtc.pc = s_rtc.ra = s_rtc.cause = 0;
+    if (info && info->frame) {
+        const RvExcFrame *f = (const RvExcFrame *)info->frame;
+        s_rtc.pc = f->mepc;
+        s_rtc.ra = f->ra;
+        s_rtc.cause = f->mcause;
+    }
+    const char *n = pcTaskGetName(NULL);
+    int i = 0;
+    for (; n && n[i] && i < (int)sizeof(s_rtc.task) - 1; i++) s_rtc.task[i] = n[i];
+    s_rtc.task[i] = 0;
+    s_rtc.crash_magic = CRASH_MAGIC;
+    s_rtc.magic = DIAG_MAGIC;
+    __real_esp_panic_handler(info);
 }
