@@ -528,6 +528,12 @@ static void power_timer_cb(lv_timer_t *t)
 
 static lv_obj_t *make_label(lv_obj_t *parent, const lv_font_t *font, uint32_t color);
 
+static void setup_close_cb(lv_event_t *e)
+{
+    (void)e;
+    net_close_setup();
+}
+
 static void show_setup_panel(bool show)
 {
     if (show && !s_setup_panel) {
@@ -552,9 +558,19 @@ static void show_setup_panel(bool show)
         lv_label_set_text(n, "Ace-Watch-Setup");
         lv_obj_align(n, LV_ALIGN_TOP_MID, 0, 110);
 
-        lv_obj_t *f = make_label(s_setup_panel, &lv_font_montserrat_16, COL_GREY);
-        lv_label_set_text(f, "Closes by itself after 5 min");
-        lv_obj_align(f, LV_ALIGN_BOTTOM_MID, 0, -44);
+        lv_obj_t *cb = lv_obj_create(s_setup_panel);   /* Close */
+        lv_obj_remove_style_all(cb);
+        lv_obj_set_size(cb, 200, 54);
+        lv_obj_set_style_radius(cb, 27, 0);
+        lv_obj_set_style_border_width(cb, 2, 0);
+        lv_obj_set_style_border_color(cb, lv_color_hex(COL_GREY), 0);
+        lv_obj_set_style_bg_color(cb, lv_color_hex(0x16223F), LV_STATE_PRESSED);
+        lv_obj_set_style_bg_opa(cb, LV_OPA_COVER, LV_STATE_PRESSED);
+        lv_obj_align(cb, LV_ALIGN_BOTTOM_MID, 0, -40);
+        lv_obj_add_event_cb(cb, setup_close_cb, LV_EVENT_CLICKED, NULL);
+        lv_obj_t *cl = make_label(cb, &lv_font_montserrat_20, COL_WHITE);
+        lv_label_set_text(cl, LV_SYMBOL_CLOSE "  Close");
+        lv_obj_center(cl);
     } else if (!show && s_setup_panel) {
         lv_obj_delete(s_setup_panel);
         s_setup_panel = NULL;

@@ -25,6 +25,9 @@ void net_start(void);
 /* Open the "Ace-Watch-Setup" hotspot to add a Wi-Fi network */
 void net_request_setup(void);
 
+/* Close the setup hotspot now (Close button on the watch) */
+void net_close_setup(void);
+
 /* ---------- DevX server: smart switches, gate, notifications ---------- */
 typedef enum { REQ_IDLE, REQ_BUSY, REQ_OK, REQ_ERR } req_state_t;
 

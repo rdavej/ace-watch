@@ -244,41 +244,47 @@ static bool wifi_connect(void)
     if (!recs) { esp_wifi_stop(); return false; }
     wifi_scan(recs, &n);
 
-    int best = -1;
-    int best_rssi = -1000;
-    for (int j = 0; j < n; j++) {
-        for (int i = 0; i < MAX_NETS; i++) {
-            if (s_nets[i].ssid[0] && strcmp((const char *)recs[j].ssid, s_nets[i].ssid) == 0 &&
-                recs[j].rssi > best_rssi) {
-                best = i;
-                best_rssi = recs[j].rssi;
-            }
+    /* Saved networks in range, strongest first */
+    int cand[MAX_NETS], rssi[MAX_NETS], nc = 0;
+    for (int i = 0; i < MAX_NETS; i++) {
+        if (!s_nets[i].ssid[0]) continue;
+        int best = -1000;
+        for (int j = 0; j < n; j++) {
+            if (strcmp((const char *)recs[j].ssid, s_nets[i].ssid) == 0 && recs[j].rssi > best) best = recs[j].rssi;
         }
+        if (best == -1000) continue;
+        int k = nc++;
+        while (k > 0 && rssi[k - 1] < best) { cand[k] = cand[k - 1]; rssi[k] = rssi[k - 1]; k--; }
+        cand[k] = i;
+        rssi[k] = best;
     }
     free(recs);
 
-    if (best < 0) {
+    if (!nc) {
         ESP_LOGI(TAG, "No saved network nearby");
         esp_wifi_stop();
         return false;
     }
 
-    wifi_config_t wc = {0};
-    strlcpy((char *)wc.sta.ssid, s_nets[best].ssid, sizeof(wc.sta.ssid));
-    strlcpy((char *)wc.sta.password, s_nets[best].pass, sizeof(wc.sta.password));
-    wc.sta.threshold.authmode = WIFI_AUTH_OPEN;
-    esp_wifi_set_config(WIFI_IF_STA, &wc);
+    /* If one doesn't work (wrong password, guest network...), try the next */
+    for (int c = 0; c < nc && c < 3; c++) {
+        const wifi_net_t *w = &s_nets[cand[c]];
+        wifi_config_t wc = {0};
+        strlcpy((char *)wc.sta.ssid, w->ssid, sizeof(wc.sta.ssid));
+        strlcpy((char *)wc.sta.password, w->pass, sizeof(wc.sta.password));
+        wc.sta.threshold.authmode = WIFI_AUTH_OPEN;
+        esp_wifi_set_config(WIFI_IF_STA, &wc);
 
-    ESP_LOGI(TAG, "Connecting to '%s' (%d dBm)", s_nets[best].ssid, best_rssi);
-    xEventGroupClearBits(s_ev, EV_GOT_IP | EV_FAIL);
-    s_connecting = true;
-    esp_wifi_connect();
-    EventBits_t b = xEventGroupWaitBits(s_ev, EV_GOT_IP | EV_FAIL, pdFALSE, pdFALSE, pdMS_TO_TICKS(20000));
-    s_connecting = false;
-
-    if (b & EV_GOT_IP) return true;
-
-    ESP_LOGW(TAG, "Could not connect");
+        ESP_LOGI(TAG, "Connecting to '%s' (%d dBm)", w->ssid, rssi[c]);
+        xEventGroupClearBits(s_ev, EV_GOT_IP | EV_FAIL);
+        s_connecting = true;
+        esp_wifi_connect();
+        EventBits_t b = xEventGroupWaitBits(s_ev, EV_GOT_IP | EV_FAIL, pdFALSE, pdFALSE, pdMS_TO_TICKS(15000));
+        s_connecting = false;
+        if (b & EV_GOT_IP) return true;
+        ESP_LOGW(TAG, "Could not connect to '%s'", w->ssid);
+        esp_wifi_disconnect();
+    }
     esp_wifi_stop();
     return false;
 }
@@ -793,15 +799,15 @@ static esp_err_t root_get(httpd_req_t *r)
     send_escaped(r, s_srv);
     httpd_resp_sendstr_chunk(r, "'><button>Save</button></form>");
     if (s_net_count) {
-        httpd_resp_sendstr_chunk(r, "<p>Already saved: ");
-        bool first = true;
+        httpd_resp_sendstr_chunk(r, "<p>Saved networks (tap Forget to remove one):</p>");
         for (int i = 0; i < MAX_NETS; i++) {
             if (!s_nets[i].ssid[0]) continue;
-            if (!first) httpd_resp_sendstr_chunk(r, ", ");
+            char a[64];
+            httpd_resp_sendstr_chunk(r, "<p><b>");
             send_escaped(r, s_nets[i].ssid);
-            first = false;
+            snprintf(a, sizeof(a), "</b> &nbsp; <a style='color:#FF5A5A' href='/forget?n=%d'>Forget</a></p>", i);
+            httpd_resp_sendstr_chunk(r, a);
         }
-        httpd_resp_sendstr_chunk(r, "</p>");
     }
     httpd_resp_sendstr_chunk(r, "</body></html>");
     httpd_resp_sendstr_chunk(r, NULL);
@@ -848,6 +854,7 @@ static esp_err_t save_post(httpd_req_t *r)
     bool known = false;
     for (int i = 0; i < MAX_NETS; i++) if (s_nets[i].ssid[0] && strcmp(s_nets[i].ssid, ssid) == 0) known = true;
     if (known && !pw[0] && !s2[0]) ssid = "";
+    if (cfg_changed && !pw[0] && !s2[0]) ssid = "";   /* only the DevX key was entered */
     if (cfg_changed && (!ssid[0] || strlen(ssid) > 32)) {
         httpd_resp_set_type(r, "text/html");
         httpd_resp_sendstr_chunk(r, PAGE_HEAD);
@@ -876,6 +883,24 @@ static esp_err_t save_post(httpd_req_t *r)
 
     xEventGroupSetBits(s_ev, EV_SAVED);
     return ESP_OK;
+}
+
+static esp_err_t forget_get(httpd_req_t *r)
+{
+    char q[16], v[4];
+    if (httpd_req_get_url_query_str(r, q, sizeof(q)) == ESP_OK &&
+        httpd_query_key_value(q, "n", v, sizeof(v)) == ESP_OK) {
+        int i = atoi(v);
+        if (i >= 0 && i < MAX_NETS && s_nets[i].ssid[0]) {
+            ESP_LOGI(TAG, "Forgot network '%s'", s_nets[i].ssid);
+            memset(&s_nets[i], 0, sizeof(wifi_net_t));
+            nets_save();
+            nets_count();
+        }
+    }
+    httpd_resp_set_status(r, "302 Found");
+    httpd_resp_set_hdr(r, "Location", "/");
+    return httpd_resp_send(r, NULL, 0);
 }
 
 static esp_err_t redirect_404(httpd_req_t *r, httpd_err_code_t err)
@@ -917,6 +942,8 @@ static void run_setup(void)
         const httpd_uri_t save = { .uri = "/save", .method = HTTP_POST, .handler = save_post };
         httpd_register_uri_handler(server, &root);
         httpd_register_uri_handler(server, &save);
+        const httpd_uri_t forget = { .uri = "/forget", .method = HTTP_GET, .handler = forget_get };
+        httpd_register_uri_handler(server, &forget);
         httpd_register_err_handler(server, HTTPD_404_NOT_FOUND, redirect_404);
     }
 
@@ -926,6 +953,7 @@ static void run_setup(void)
     xEventGroupClearBits(s_ev, EV_SAVED);
     EventBits_t b = xEventGroupWaitBits(s_ev, EV_SAVED, pdTRUE, pdFALSE, pdMS_TO_TICKS(SETUP_TIMEOUT_MS));
     if (b & EV_SAVED) vTaskDelay(pdMS_TO_TICKS(2500)); /* let the "Saved" page reach the phone */
+    if (!s_net_count) g_net_state = NET_NO_WIFI;
 
     s_dns_run = false;
     vTaskDelay(pdMS_TO_TICKS(1200));
@@ -1005,6 +1033,11 @@ void net_start(void)
     s_jobs = xQueueCreate(6, sizeof(net_job_t));
     s_lock = xSemaphoreCreateMutex();
     xTaskCreate(net_task, "net", 10240, NULL, 3, NULL);
+}
+
+void net_close_setup(void)
+{
+    if (s_ev && g_net_state == NET_SETUP) xEventGroupSetBits(s_ev, EV_SAVED);
 }
 
 void net_request_setup(void)
