@@ -845,6 +845,11 @@ static esp_err_t save_post(httpd_req_t *r)
         if (strcmp(srv, s_srv) != 0) { strlcpy(s_srv, srv, sizeof(s_srv)); cfg_changed = true; }
     }
     if (cfg_changed) cfg_save();
+    /* An already-saved network picked again with no password typed: keep its saved password
+       (so entering only the DevX key doesn't wipe the gym Wi-Fi password) */
+    bool known = false;
+    for (int i = 0; i < MAX_NETS; i++) if (s_nets[i].ssid[0] && strcmp(s_nets[i].ssid, ssid) == 0) known = true;
+    if (known && !pw[0] && !s2[0]) ssid = "";
     if (cfg_changed && (!ssid[0] || strlen(ssid) > 32)) {
         httpd_resp_set_type(r, "text/html");
         httpd_resp_sendstr_chunk(r, PAGE_HEAD);
