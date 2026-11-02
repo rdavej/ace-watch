@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "esp_timer.h"
+#include "sound.h"
 
 #define COL_BG      0x000000
 #define COL_BLUE    0x3FB8FF
@@ -39,6 +40,7 @@ static int64_t s_rest_end_us = 0;   /* 0 = not resting */
 static int s_rest_total = 90;
 static int64_t s_go_until_us = 0;   /* showing "GO!" */
 static bool s_ended_by_hold = false;
+static int s_last_tick = -1;      /* last countdown second that beeped */
 
 static int64_t now_us(void) { return esp_timer_get_time(); }
 
@@ -90,6 +92,7 @@ static void start_rest(void)
     s_rest_total = s_presets[s_preset];
     s_rest_end_us = now_us() + (int64_t)s_rest_total * 1000000;
     s_go_until_us = 0;
+    s_last_tick = -1;
     if (!s_start_us) s_start_us = now_us();
     set_static(s_caption, s_caption_buf, sizeof(s_caption_buf), "REST");
     ring_color(COL_BLUE);
@@ -157,9 +160,14 @@ bool workout_tick(void)
             set_static(s_caption, s_caption_buf, sizeof(s_caption_buf), "GO!");
             lv_arc_set_value(s_arc, 0);
             ring_color(COL_YELLOW);
+            sound_play(SOUND_GO);
             finished = true;
         } else {
             int left = (int)((left_us + 999999) / 1000000);   /* round up */
+            if (left <= 3 && left != s_last_tick) {            /* tick at 3, 2, 1 */
+                s_last_tick = left;
+                sound_play(SOUND_TICK);
+            }
             char t[8];
             snprintf(t, sizeof(t), "%d:%02d", left / 60, left % 60);
             set_static(s_count, s_count_buf, sizeof(s_count_buf), t);

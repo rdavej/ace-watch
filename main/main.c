@@ -31,6 +31,7 @@
 #include "motion.h"
 #include "diag.h"
 #include "workout.h"
+#include "sound.h"
 
 LV_FONT_DECLARE(font_time_86);
 LV_IMAGE_DECLARE(img_devx_logo_big);
@@ -267,6 +268,7 @@ static void update_steps(void)
         if (!first && n < STEP_GOAL + 50) { /* just crossed it, not a reboot */
             lv_obj_remove_flag(s_toast, LV_OBJ_FLAG_HIDDEN);
             s_toast_until = lv_tick_get() + 5000;
+            sound_play(SOUND_GOAL);
             lv_display_trigger_activity(NULL);                 /* light up to celebrate */
         }
     } else if (!reached) {
@@ -874,6 +876,7 @@ void app_main(void)
     bsp_display_start();
     pmu_init();
     motion_start();
+    sound_start();
 
     diag_phase("UI");
     bsp_display_lock(0);

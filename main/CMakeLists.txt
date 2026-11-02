@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS main.c net.c motion.c diag.c workout.c img_devx_logo.c font_time_86.c
+    SRCS main.c net.c motion.c diag.c workout.c sound.c img_devx_logo.c font_time_86.c
     INCLUDE_DIRS .)
 
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wno-error=cpp)
