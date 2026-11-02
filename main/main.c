@@ -357,9 +357,16 @@ static int palm_check(void)
         ESP_LOGI(TAG, "touch: gest %02x pts %02x | %02x %02x %02x %02x %02x %02x",
                  d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]);
     }
+    /* What the chip showed us (v0.3.4 log):
+       finger:  reg01 = 01, points = 1, weight 00
+       palm:    reg01 = 01 but points = 0 (the chip hides big touches),
+                or a point with a heavy weight (c1)
+       nothing: reg01 = 00, points = 0 */
+    int gest = d[0];
     int pts = d[1] & 0x0F;
-    if (pts == 0) return 0;          /* nothing touching */
-    if (pts == 1) return 1;          /* one finger */
+    int weight = d[6];
+    if (pts == 0) return gest ? 2 : 0;
+    if (pts == 1) return (weight >= 0x60 && weight != 0xFF) ? 2 : 1;
     return 2;                        /* 2+ points or invalid count: palm */
 }
 
@@ -428,6 +435,12 @@ static void power_timer_cb(lv_timer_t *t)
             }
         } else if (p == 1) {
             s_palm_n = 0;
+            if (s_palm_down) {
+                /* a normal finger tap after the palm: palm is gone, let this tap wake it */
+                s_palm_down = false;
+                s_clear_n = 0;
+                s_block_until = now - 1000;
+            }
         }
     }
     if (s_palm_down) s_block_until = now + 300;
