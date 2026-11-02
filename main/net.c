@@ -7,6 +7,7 @@
  */
 #include "net.h"
 
+#include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <ctype.h>
@@ -275,6 +276,18 @@ static void trim(char *s)
     while (l && isspace((unsigned char)s[l - 1])) s[--l] = 0;
 }
 
+/* Compare "a.b.c" versions: <0 if a is older, 0 if same, >0 if a is newer */
+static int version_cmp(const char *a, const char *b)
+{
+    int va[3] = {0}, vb[3] = {0};
+    sscanf(a, "%d.%d.%d", &va[0], &va[1], &va[2]);
+    sscanf(b, "%d.%d.%d", &vb[0], &vb[1], &vb[2]);
+    for (int i = 0; i < 3; i++) {
+        if (va[i] != vb[i]) return va[i] - vb[i];
+    }
+    return 0;
+}
+
 static void ota_check(void)
 {
     rxbuf_t rx = {0};
@@ -303,7 +316,7 @@ static void ota_check(void)
 
     const char *mine = esp_app_get_description()->version;
     ESP_LOGI(TAG, "Firmware: this %s, latest %s", mine, rx.buf);
-    if (!rx.buf[0] || strcmp(rx.buf, mine) == 0) return;
+    if (!rx.buf[0] || version_cmp(rx.buf, mine) <= 0) return; /* only ever move forward */
 
     g_net_state = NET_UPDATING;
     esp_http_client_config_t bc = {
