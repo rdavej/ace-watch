@@ -953,7 +953,7 @@ static void run_setup(void)
     xEventGroupClearBits(s_ev, EV_SAVED);
     EventBits_t b = xEventGroupWaitBits(s_ev, EV_SAVED, pdTRUE, pdFALSE, pdMS_TO_TICKS(SETUP_TIMEOUT_MS));
     if (b & EV_SAVED) vTaskDelay(pdMS_TO_TICKS(2500)); /* let the "Saved" page reach the phone */
-    if (!s_net_count) g_net_state = NET_NO_WIFI;
+    g_net_state = s_net_count ? NET_IDLE : NET_NO_WIFI;   /* setup screen closes */
 
     s_dns_run = false;
     vTaskDelay(pdMS_TO_TICKS(1200));
@@ -992,7 +992,11 @@ static void net_task(void *arg)
         if (esp_timer_get_time() < next_sync_us) {
             int64_t wait_ms = (next_sync_us - esp_timer_get_time()) / 1000;
             EventBits_t b = xEventGroupWaitBits(s_ev, EV_SETUP_REQ | EV_JOB, pdFALSE, pdFALSE, pdMS_TO_TICKS(wait_ms));
-            if (b & EV_SETUP_REQ) { xEventGroupClearBits(s_ev, EV_SETUP_REQ); run_setup(); }
+            if (b & EV_SETUP_REQ) {
+                xEventGroupClearBits(s_ev, EV_SETUP_REQ);
+                run_setup();
+                next_sync_us = 0;   /* sync right away: new network or DevX key */
+            }
             else if (b & EV_JOB) { xEventGroupClearBits(s_ev, EV_JOB); run_jobs(); }
             continue;
         }
