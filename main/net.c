@@ -564,7 +564,7 @@ static void run_setup(void)
     }
 
     s_dns_run = true;
-    xTaskCreate(dns_task, "dns", 3072, NULL, 5, NULL);
+    xTaskCreate(dns_task, "dns", 3072, NULL, 3, NULL);
 
     xEventGroupClearBits(s_ev, EV_SAVED);
     EventBits_t b = xEventGroupWaitBits(s_ev, EV_SAVED, pdTRUE, pdFALSE, pdMS_TO_TICKS(SETUP_TIMEOUT_MS));
@@ -582,6 +582,8 @@ static void run_setup(void)
 
 static void net_task(void *arg)
 {
+    vTaskDelay(pdMS_TO_TICKS(1500)); /* let the watch face settle first */
+    wifi_init();
     nets_load();
     bool first = true;
 
@@ -618,8 +620,7 @@ static void net_task(void *arg)
 void net_start(void)
 {
     s_ev = xEventGroupCreate();
-    wifi_init();
-    xTaskCreate(net_task, "net", 10240, NULL, 4, NULL);
+    xTaskCreate(net_task, "net", 10240, NULL, 3, NULL);
 }
 
 void net_request_setup(void)

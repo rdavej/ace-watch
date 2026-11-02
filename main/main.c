@@ -22,6 +22,7 @@
 #include "bsp/display.h"
 #include "esp_app_desc.h"
 #include "esp_ota_ops.h"
+#include "esp_heap_caps.h"
 #include "net.h"
 
 static const char *TAG = "ace_watch";
@@ -272,6 +273,14 @@ static void update_status(void)
     }
 }
 
+static void heap_timer_cb(lv_timer_t *t)
+{
+    (void)t;
+    ESP_LOGI(TAG, "heap free %u, largest block %u",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+}
+
 static void status_timer_cb(lv_timer_t *t)
 {
     (void)t;
@@ -352,6 +361,7 @@ static void build_ui(void)
     lv_timer_create(battery_timer_cb, 5000, NULL);
     lv_timer_create(power_timer_cb, 250, NULL);
     lv_timer_create(status_timer_cb, 500, NULL);
+    lv_timer_create(heap_timer_cb, 10000, NULL);
     update_status();
 }
 
@@ -372,6 +382,7 @@ void app_main(void)
 
     bsp_display_lock(0);
     build_ui();
+    lv_refr_now(NULL);   /* draw the full first frame before Wi-Fi starts */
     bsp_display_unlock();
 
     bsp_display_brightness_set(SCREEN_BRIGHTNESS);
