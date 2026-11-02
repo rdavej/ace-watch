@@ -111,6 +111,40 @@ void sound_start(void)
     xTaskCreate(sound_task, "sound", 3072, NULL, 4, NULL);
 }
 
+/* ---------- Microphone ---------- */
+static esp_codec_dev_handle_t s_mic;
+static int16_t s_mic_st[160 * 2];           /* 10 ms of stereo frames */
+
+bool sound_mic_open(void)
+{
+    if (!s_mic) {
+        s_mic = bsp_audio_codec_microphone_init();
+        if (!s_mic) { ESP_LOGW(TAG, "Microphone not available"); return false; }
+    }
+    esp_codec_dev_sample_info_t fs = { .sample_rate = RATE, .channel = 2, .bits_per_sample = 16 };
+    if (esp_codec_dev_open(s_mic, &fs) != ESP_CODEC_DEV_OK) { ESP_LOGW(TAG, "Microphone open failed"); return false; }
+    esp_codec_dev_set_in_gain(s_mic, 30.0);
+    return true;
+}
+
+int sound_mic_read(int16_t *mono, int frames)
+{
+    int done = 0;
+    while (done < frames) {
+        int n = frames - done;
+        if (n > 160) n = 160;
+        if (esp_codec_dev_read(s_mic, s_mic_st, n * 4) != ESP_CODEC_DEV_OK) break;
+        for (int i = 0; i < n; i++) mono[done + i] = (int16_t)(((int32_t)s_mic_st[2 * i] + s_mic_st[2 * i + 1]) / 2);
+        done += n;
+    }
+    return done;
+}
+
+void sound_mic_close(void)
+{
+    if (s_mic) esp_codec_dev_close(s_mic);
+}
+
 void sound_play(sound_t s)
 {
     if (s_q) xQueueSend(s_q, &s, 0);

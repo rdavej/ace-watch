@@ -10,7 +10,9 @@ DevX / Ace firmware for the Waveshare ESP32-C6-Touch-AMOLED-2.06 (410 × 502 AMO
 - Raise to wake: learns your viewing angle from tap-to-wake, then wakes when you lift your wrist into it (arm must be down ~0.5 s first). Lower the wrist again and a raise-woken screen turns off after ~2 s
 - Palm cover: cover the screen with your palm to turn it off straight away
 - **Workout screen (swipe left, swipe right to go back):** rest ring countdown, presets 60 s / 90 s / 2 min, big SET DONE button (adds a set + starts rest), workout clock. Beeps at 3-2-1, rest over → three beeps and the screen lights up yellow "GO!". Tap the ring twice while resting to skip the rest. END (tap twice) stops the workout clock and shows the total
-- **Swipe left through:** Face → Workout → Stopwatch → Steps → Alerts → Switches → Settings (swipe right to go back)
+- **Swipe left through:** Face → Ace → Workout → Stopwatch → Steps → Alerts → Switches → Settings (swipe right to go back)
+- **Talk to Ace:** on the Ace screen, hold the button, speak, let go; Ace's answer shows on screen (up to 8 s of speech; actions that need a Confirm still need the Ace app)
+- **Gate on the face:** tap GATE twice to open the gym gate (shows once the watch key is set)
 - **Stopwatch:** START/STOP, LAP while running, RESET when stopped, laps list with the fastest in yellow; keeps running in the background and shows on the face
 - **Steps screen:** last 7 days as bars with the 8,000 goal line and the daily average
 - **DevX alerts:** a copy of the pushes DevX/Ace send the Director, checked at every sync (every 30 min) and when you open the screen; new ones pop up as a banner with a ding

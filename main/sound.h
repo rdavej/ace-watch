@@ -13,3 +13,10 @@ void sound_start(void);
 
 /* Queue a sound; returns immediately */
 void sound_play(sound_t s);
+
+/* Microphone (ES7210), for talking to Ace: 16 kHz mono 16-bit */
+#include <stdbool.h>
+#include <stdint.h>
+bool sound_mic_open(void);
+int sound_mic_read(int16_t *mono, int frames);   /* blocks ~frames/16 ms; returns frames read */
+void sound_mic_close(void);

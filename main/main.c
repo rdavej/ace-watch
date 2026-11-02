@@ -169,6 +169,9 @@ static lv_obj_t *s_bat_label;
 static lv_obj_t *s_steps;
 static lv_obj_t *s_ring;          /* steps ring around the face */
 static lv_obj_t *s_sets_lbl, *s_alerts_lbl;
+static lv_obj_t *s_gate_pill, *s_gate_lbl;
+static uint32_t s_gate_armed_at, s_gate_shown_at;   /* tap once = armed (3 s), result shown 4 s */
+static bool s_gate_wait;
 static char s_sets_buf[16], s_alerts_buf[16];
 static int s_unread = 0;
 static bool s_bat_charging = false;
@@ -253,6 +256,54 @@ static void update_clock(void)
     } else {
         lv_obj_add_flag(s_alerts_lbl, LV_OBJ_FLAG_HIDDEN);
     }
+    gate_pill_tick();
+}
+
+/* Gate pill on the face: tap twice to open the gym gate (same as the admin app's Open gate) */
+static void gate_pill_show(const char *txt, uint32_t bg, uint32_t fg)
+{
+    lv_label_set_text(s_gate_lbl, txt);
+    lv_obj_set_style_bg_color(s_gate_pill, lv_color_hex(bg), 0);
+    lv_obj_set_style_text_color(s_gate_lbl, lv_color_hex(fg), 0);
+}
+
+static void gate_pill_idle(void)
+{
+    s_gate_armed_at = s_gate_shown_at = 0;
+    gate_pill_show(LV_SYMBOL_HOME " GATE", 0x0A1226, COL_BLUE);
+}
+
+static void gate_pill_cb(lv_event_t *e)
+{
+    (void)e;
+    if (s_gate_wait) return;
+    uint32_t now = lv_tick_get();
+    if (s_gate_armed_at && now - s_gate_armed_at < 3000) {
+        s_gate_armed_at = 0;
+        s_gate_wait = true;
+        net_gate_open();
+        gate_pill_show("OPENING...", 0x0A1226, COL_GREY);
+    } else {
+        s_gate_armed_at = now ? now : 1;
+        s_gate_shown_at = 0;
+        gate_pill_show("TAP AGAIN", COL_YELLOW, 0x00122B);
+    }
+}
+
+static void gate_pill_tick(void)
+{
+    if (!s_gate_pill) return;
+    if (!net_has_key()) { lv_obj_add_flag(s_gate_pill, LV_OBJ_FLAG_HIDDEN); return; }
+    lv_obj_remove_flag(s_gate_pill, LV_OBJ_FLAG_HIDDEN);
+    uint32_t now = lv_tick_get();
+    if (s_gate_wait && (g_gate_state == REQ_OK || g_gate_state == REQ_ERR)) {
+        s_gate_wait = false;
+        s_gate_shown_at = now ? now : 1;
+        if (g_gate_state == REQ_OK) { gate_pill_show(LV_SYMBOL_OK " GATE OPEN", COL_BLUE, 0x00122B); sound_play(SOUND_GO); }
+        else gate_pill_show(g_gate_msg[0] ? g_gate_msg : "Gate failed", 0x3A1010, 0xFF5A5A);
+    }
+    if (s_gate_armed_at && now - s_gate_armed_at >= 3000) gate_pill_idle();
+    if (s_gate_shown_at && now - s_gate_shown_at >= 4000) gate_pill_idle();
 }
 
 static void update_battery(void)
@@ -475,8 +526,8 @@ static void screen_on(void)
     s_wake_quiet = false;
 }
 
-/* Screens, swipe left / right: Face -> Workout -> Stopwatch -> Steps -> Alerts -> Switches -> Settings */
-enum { PG_FACE, PG_WORKOUT, PG_STOPWATCH, PG_STEPS, PG_ALERTS, PG_SWITCHES, PG_SETTINGS, PG_N };
+/* Screens, swipe left / right: Face -> Ace -> Workout -> Stopwatch -> Steps -> Alerts -> Switches -> Settings */
+enum { PG_FACE, PG_ACE, PG_WORKOUT, PG_STOPWATCH, PG_STEPS, PG_ALERTS, PG_SWITCHES, PG_SETTINGS, PG_N };
 static int s_page = PG_FACE;
 static void nav_go(int pg);
 static bool banner_check(void);
@@ -500,7 +551,8 @@ static void power_timer_cb(lv_timer_t *t)
     (void)t;
     diag_ui_alive();   /* tell the freeze guard the screen task is running */
     uint32_t now = lv_tick_get();
-    bool keep_on = g_net_state == NET_SETUP || g_net_state == NET_UPDATING;
+    bool keep_on = g_net_state == NET_SETUP || g_net_state == NET_UPDATING ||
+                   g_ace_state == ACE_CONNECT || g_ace_state == ACE_LISTEN || g_ace_state == ACE_THINK;
 
     /* Palm: check while the screen is on, and while covered (to see it lift) */
     if (s_screen_on || s_palm_down) {
@@ -708,7 +760,8 @@ static void nav_go(int pg)
     if (pg == s_page || pg < 0 || pg >= PG_N) return;
     page_close();
     workout_show(pg == PG_WORKOUT);
-    if (pg >= PG_STOPWATCH) page_open(pg - PG_STOPWATCH, lv_screen_active());
+    if (pg == PG_ACE) page_open(PAGE_ACE, lv_screen_active());
+    else if (pg >= PG_STOPWATCH) page_open(PAGE_STOPWATCH + (pg - PG_STOPWATCH), lv_screen_active());
     if (pg == PG_ALERTS) s_unread = 0;
     s_page = pg;
 }
@@ -1171,9 +1224,10 @@ static void build_ui(void)
     lv_obj_remove_style_all(bot);
     lv_obj_set_size(bot, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(bot, LV_FLEX_FLOW_ROW);
-    lv_obj_set_style_pad_column(bot, 22, 0);
+    lv_obj_set_style_pad_column(bot, 18, 0);
+    lv_obj_set_flex_align(bot, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_remove_flag(bot, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_align(bot, LV_ALIGN_BOTTOM_MID, 0, -20);
+    lv_obj_align(bot, LV_ALIGN_BOTTOM_MID, 0, -12);
     s_bat_label = make_label(bot, &lv_font_montserrat_16, COL_GREY);
     label_printf(s_bat_label, s_bat_buf, sizeof(s_bat_buf), "%s", "");
     s_sets_lbl = make_label(bot, &lv_font_montserrat_16, COL_BLUE);
@@ -1182,6 +1236,24 @@ static void build_ui(void)
     s_alerts_lbl = make_label(bot, &lv_font_montserrat_16, COL_YELLOW);
     label_printf(s_alerts_lbl, s_alerts_buf, sizeof(s_alerts_buf), "%s", "");
     lv_obj_add_flag(s_alerts_lbl, LV_OBJ_FLAG_HIDDEN);
+
+    /* Gate pill, at the end of the bottom row (only when the watch key is set) */
+    s_gate_pill = lv_obj_create(bot);
+    lv_obj_remove_style_all(s_gate_pill);
+    lv_obj_set_size(s_gate_pill, LV_SIZE_CONTENT, 40);
+    lv_obj_set_style_pad_hor(s_gate_pill, 18, 0);
+    lv_obj_set_style_radius(s_gate_pill, 20, 0);
+    lv_obj_set_style_bg_opa(s_gate_pill, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(s_gate_pill, 1, 0);
+    lv_obj_set_style_border_color(s_gate_pill, lv_color_hex(0x13203D), 0);
+    lv_obj_set_ext_click_area(s_gate_pill, 12);
+    lv_obj_add_event_cb(s_gate_pill, gate_pill_cb, LV_EVENT_CLICKED, NULL);
+    s_gate_lbl = make_label(s_gate_pill, &lv_font_montserrat_16, COL_BLUE);
+    lv_obj_set_style_max_width(s_gate_lbl, 170, 0);
+    lv_label_set_long_mode(s_gate_lbl, LV_LABEL_LONG_DOT);
+    lv_obj_center(s_gate_lbl);
+    lv_obj_add_flag(s_gate_pill, LV_OBJ_FLAG_HIDDEN);
+    gate_pill_idle();
 
     /* Workout screen (swipe left) */
     workout_build(scr);

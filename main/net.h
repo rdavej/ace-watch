@@ -69,5 +69,15 @@ void net_switches_refresh(void);
 void net_switch_set(const char *id, bool on);
 void net_gate_open(void);
 void net_feed_refresh(void);
+
+/* Talk to Ace: hold to record, release to send */
+typedef enum { ACE_IDLE, ACE_CONNECT, ACE_LISTEN, ACE_THINK, ACE_DONE, ACE_ERR } ace_state_t;
+extern volatile ace_state_t g_ace_state;
+extern volatile bool g_ace_hold;          /* the screen sets this while the button is held */
+extern volatile uint32_t g_ace_rev;       /* changes when a new answer arrives */
+extern char g_ace_heard[164];
+extern char g_ace_reply[904];
+void net_ace_start(void);                 /* button pressed */
+void net_warm_up(void);                   /* Ace screen opened: connect Wi-Fi ahead of time */
 bool net_lock(int wait_ms);
 void net_unlock(void);
