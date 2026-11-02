@@ -4,6 +4,8 @@
  *  - Remembers up to 5 networks (home, office, gym...)
  *  - Every 30 min: join the strongest known network, sync time, check for an update, then turn Wi-Fi off
  *  - Updates (OTA) come from the latest GitHub release of rdavej/ace-watch
+ *  - DevX server (needs the watch key from the setup page): smart switches, gym gate,
+ *    DevX notifications (fetched at every sync)
  */
 #include "net.h"
 #include "diag.h"
@@ -28,7 +30,10 @@
 #include "esp_crt_bundle.h"
 #include "esp_app_desc.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "lwip/sockets.h"
+#include "freertos/queue.h"
+#include "freertos/semphr.h"
 
 static const char *TAG = "net";
 
@@ -59,6 +64,35 @@ static EventGroupHandle_t s_ev;
 #define EV_FAIL       BIT1
 #define EV_SETUP_REQ  BIT2
 #define EV_SAVED      BIT3
+#define EV_JOB        BIT4
+
+#define DEFAULT_SERVER  "https://app.poweredbydevx.com"
+#define STAY_ON_MS      60000   /* after a switch tap, keep Wi-Fi up this long for the next tap */
+
+/* DevX server settings (setup page) */
+static char s_srv[96];
+static char s_key[72];
+
+/* Results shared with the screens (guarded by s_lock) */
+sw_t g_sw[SW_MAX];
+volatile int g_sw_n = 0;
+volatile uint32_t g_sw_rev = 0;
+volatile req_state_t g_sw_state = REQ_IDLE;
+char g_sw_msg[48] = "";
+volatile req_state_t g_gate_state = REQ_IDLE;
+char g_gate_msg[48] = "";
+feed_t g_feed[FEED_MAX];
+volatile int g_feed_n = 0;
+volatile uint32_t g_feed_rev = 0;
+volatile int g_feed_new = 0;         /* number of new notifications since the screen last looked */
+volatile req_state_t g_feed_state = REQ_IDLE;
+static SemaphoreHandle_t s_lock;
+static int64_t s_feed_seen = 0;      /* newest notification already alerted (server ms, saved) */
+
+typedef enum { JOB_SW_LIST, JOB_SW_SET, JOB_GATE, JOB_FEED } job_kind_t;
+typedef struct { job_kind_t kind; char id[24]; bool on; } net_job_t;
+static QueueHandle_t s_jobs;
+static bool s_wifi_up = false;
 
 static volatile bool s_connecting;
 static volatile bool s_dns_run;
@@ -122,6 +156,35 @@ static void nets_add(const char *ssid, const char *pass)
     nets_count();
     ESP_LOGI(TAG, "Saved network '%s' (%d stored)", ssid, s_net_count);
 }
+
+/* ---------------- DevX server settings ---------------- */
+
+static void cfg_load(void)
+{
+    strlcpy(s_srv, DEFAULT_SERVER, sizeof(s_srv));
+    s_key[0] = 0;
+    nvs_handle_t h;
+    if (nvs_open("cfg", NVS_READONLY, &h) == ESP_OK) {
+        size_t n = sizeof(s_srv);
+        if (nvs_get_str(h, "srv", s_srv, &n) != ESP_OK || !s_srv[0]) strlcpy(s_srv, DEFAULT_SERVER, sizeof(s_srv));
+        n = sizeof(s_key);
+        if (nvs_get_str(h, "key", s_key, &n) != ESP_OK) s_key[0] = 0;
+        nvs_get_i64(h, "feedseen", &s_feed_seen);
+        nvs_close(h);
+    }
+}
+
+static void cfg_save(void)
+{
+    nvs_handle_t h;
+    if (nvs_open("cfg", NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_str(h, "srv", s_srv);
+    nvs_set_str(h, "key", s_key);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+bool net_has_key(void) { return s_key[0] != 0; }
 
 /* ---------------- Wi-Fi ---------------- */
 
@@ -341,6 +404,251 @@ static void ota_check(void)
     ESP_LOGE(TAG, "Update failed");
 }
 
+/* ---------------- DevX server ---------------- */
+
+static char s_resp[2048];
+
+/* Plain-text request to the DevX server. Returns the HTTP status (or -1); reply text in s_resp. */
+static int devx_req(const char *method, const char *path, const char *json)
+{
+    char url[160];
+    snprintf(url, sizeof(url), "%s%s", s_srv, path);
+    char auth[96];
+    snprintf(auth, sizeof(auth), "Bearer %s", s_key);
+
+    esp_http_client_config_t hc = {
+        .url = url,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .timeout_ms = 10000,
+        .buffer_size = 2048,
+        .buffer_size_tx = 1024,
+        .method = strcmp(method, "POST") == 0 ? HTTP_METHOD_POST : HTTP_METHOD_GET,
+    };
+    esp_http_client_handle_t c = esp_http_client_init(&hc);
+    if (!c) return -1;
+    esp_http_client_set_header(c, "Authorization", auth);
+    int wlen = json ? (int)strlen(json) : 0;
+    if (json) esp_http_client_set_header(c, "Content-Type", "application/json");
+
+    int status = -1, got = 0;
+    if (esp_http_client_open(c, wlen) == ESP_OK) {
+        if (wlen) esp_http_client_write(c, json, wlen);
+        esp_http_client_fetch_headers(c);
+        status = esp_http_client_get_status_code(c);
+        int n;
+        while (got < (int)sizeof(s_resp) - 1 &&
+               (n = esp_http_client_read(c, s_resp + got, sizeof(s_resp) - 1 - got)) > 0) {
+            got += n;
+        }
+    }
+    s_resp[got] = 0;
+    esp_http_client_close(c);
+    esp_http_client_cleanup(c);
+    ESP_LOGI(TAG, "%s %s -> %d", method, path, status);
+    return status;
+}
+
+/* Next line of s_resp (modifies it). Returns NULL at the end. */
+static char *next_line(char **p)
+{
+    if (!*p || !**p) return NULL;
+    char *l = *p;
+    char *nl = strchr(l, '\n');
+    if (nl) { *nl = 0; *p = nl + 1; } else { *p = l + strlen(l); }
+    return l;
+}
+
+/* Split "a|b|c" in place into up to n fields */
+static int split(char *l, char **f, int n)
+{
+    int k = 0;
+    f[k++] = l;
+    for (char *c = l; *c && k < n; c++) {
+        if (*c == '|') { *c = 0; f[k++] = c + 1; }
+    }
+    return k;
+}
+
+static void set_msg(char *dst, const char *fallback)
+{
+    /* "err|message" from the server, else the fallback */
+    if (strncmp(s_resp, "err|", 4) == 0) {
+        char *e = s_resp + 4;
+        char *nl = strchr(e, '\n');
+        if (nl) *nl = 0;
+        strlcpy(dst, e, 48);
+    } else {
+        strlcpy(dst, fallback, 48);
+    }
+}
+
+static void job_sw_list(void)
+{
+    g_sw_state = REQ_BUSY;
+    int st = devx_req("GET", "/api/watch/switches?fresh=1", NULL);
+    if (st != 200 || strncmp(s_resp, "ok|", 3) != 0) {
+        set_msg(g_sw_msg, st < 0 ? "Can't reach DevX" : "Server said no");
+        g_sw_state = REQ_ERR;
+        return;
+    }
+    static sw_t tmp[SW_MAX];
+    int n = 0;
+    char *p = s_resp, *l;
+    next_line(&p);                         /* ok|count */
+    while ((l = next_line(&p)) && n < SW_MAX) {
+        char *f[5];
+        if (split(l, f, 5) < 5) continue;
+        strlcpy(tmp[n].id, f[0], sizeof(tmp[n].id));
+        tmp[n].on = f[1][0] == '1' ? 1 : f[1][0] == '0' ? 0 : -1;
+        tmp[n].online = f[2][0] == '1';
+        tmp[n].gate = f[3][0] == '1';
+        strlcpy(tmp[n].name, f[4], sizeof(tmp[n].name));
+        n++;
+    }
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    memcpy(g_sw, tmp, sizeof(sw_t) * n);
+    g_sw_n = n;
+    g_sw_rev++;
+    xSemaphoreGive(s_lock);
+    g_sw_msg[0] = 0;
+    g_sw_state = REQ_OK;
+}
+
+static void job_sw_set(const char *id, bool on)
+{
+    char path[64], body[24];
+    snprintf(path, sizeof(path), "/api/watch/switches/%s", id);
+    snprintf(body, sizeof(body), "{\"on\":%s}", on ? "true" : "false");
+    g_sw_state = REQ_BUSY;
+    int st = devx_req("POST", path, body);
+    if (st == 200 && strncmp(s_resp, "ok|", 3) == 0) {
+        xSemaphoreTake(s_lock, portMAX_DELAY);
+        for (int i = 0; i < g_sw_n; i++) if (strcmp(g_sw[i].id, id) == 0) g_sw[i].on = on;
+        g_sw_rev++;
+        xSemaphoreGive(s_lock);
+        g_sw_msg[0] = 0;
+        g_sw_state = REQ_OK;
+    } else {
+        set_msg(g_sw_msg, st < 0 ? "Can't reach DevX" : "Didn't switch");
+        g_sw_state = REQ_ERR;
+    }
+}
+
+static void job_gate(void)
+{
+    g_gate_state = REQ_BUSY;
+    int st = devx_req("POST", "/api/watch/gate", "{}");
+    if (st == 200 && strncmp(s_resp, "ok|", 3) == 0) {
+        strlcpy(g_gate_msg, "Gate opened", sizeof(g_gate_msg));
+        g_gate_state = REQ_OK;
+    } else {
+        set_msg(g_gate_msg, st < 0 ? "Can't reach DevX" : "Gate didn't open");
+        g_gate_state = REQ_ERR;
+    }
+}
+
+static void job_feed(void)
+{
+    g_feed_state = REQ_BUSY;
+    int st = devx_req("GET", "/api/watch/feed?since=0", NULL);
+    if (st != 200 || strncmp(s_resp, "ok|", 3) != 0) {
+        g_feed_state = REQ_ERR;
+        return;
+    }
+    static feed_t tmp[FEED_MAX];
+    int n = 0, fresh = 0;
+    int64_t newest = s_feed_seen;
+    char *p = s_resp, *l;
+    next_line(&p);                         /* ok|server time */
+    while ((l = next_line(&p)) && n < FEED_MAX) {
+        char *f[3];
+        if (split(l, f, 3) < 3) continue;
+        tmp[n].at = strtoll(f[0], NULL, 10);
+        strlcpy(tmp[n].title, f[1], sizeof(tmp[n].title));
+        strlcpy(tmp[n].body, f[2], sizeof(tmp[n].body));
+        if (tmp[n].at > s_feed_seen) fresh++;
+        if (tmp[n].at > newest) newest = tmp[n].at;
+        n++;
+    }
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    memcpy(g_feed, tmp, sizeof(feed_t) * n);
+    g_feed_n = n;
+    g_feed_rev++;
+    /* first ever fetch: don't buzz for old ones */
+    if (s_feed_seen && fresh) g_feed_new += fresh;
+    xSemaphoreGive(s_lock);
+    if (newest != s_feed_seen) {
+        s_feed_seen = newest;
+        nvs_handle_t h;
+        if (nvs_open("cfg", NVS_READWRITE, &h) == ESP_OK) {
+            nvs_set_i64(h, "feedseen", s_feed_seen);
+            nvs_commit(h);
+            nvs_close(h);
+        }
+    }
+    g_feed_state = REQ_OK;
+}
+
+static bool queue_job(job_kind_t k, const char *id, bool on)
+{
+    if (!s_jobs) return false;
+    net_job_t j = { .kind = k, .on = on };
+    if (id) strlcpy(j.id, id, sizeof(j.id));
+    if (xQueueSend(s_jobs, &j, 0) != pdTRUE) return false;
+    xEventGroupSetBits(s_ev, EV_JOB);
+    return true;
+}
+
+void net_switches_refresh(void) { if (net_has_key()) { g_sw_state = REQ_BUSY; queue_job(JOB_SW_LIST, NULL, false); } }
+void net_switch_set(const char *id, bool on) { if (net_has_key()) { g_sw_state = REQ_BUSY; queue_job(JOB_SW_SET, id, on); } }
+void net_gate_open(void) { if (net_has_key()) { g_gate_state = REQ_BUSY; queue_job(JOB_GATE, NULL, false); } }
+void net_feed_refresh(void) { if (net_has_key()) { g_feed_state = REQ_BUSY; queue_job(JOB_FEED, NULL, false); } }
+
+bool net_lock(int wait_ms) { return s_lock && xSemaphoreTake(s_lock, pdMS_TO_TICKS(wait_ms)) == pdTRUE; }
+void net_unlock(void) { xSemaphoreGive(s_lock); }
+
+/* Run queued jobs; keeps Wi-Fi on for a minute after the last one so the next tap is quick */
+static void run_jobs(void)
+{
+    net_job_t j;
+    for (;;) {
+        bool any = false;
+        while (xQueueReceive(s_jobs, &j, 0) == pdTRUE) {
+            any = true;
+            if (!s_wifi_up) {
+                g_net_phase = "Wi-Fi";
+                g_net_state = NET_CONNECTING;
+                diag_phase("Wi-Fi");
+                s_wifi_up = wifi_connect();
+                g_net_state = s_wifi_up ? NET_OK : NET_OFFLINE;
+                if (!s_wifi_up) {
+                    const char *m = "No known Wi-Fi nearby";
+                    if (j.kind == JOB_GATE) { strlcpy(g_gate_msg, m, sizeof(g_gate_msg)); g_gate_state = REQ_ERR; }
+                    else if (j.kind == JOB_FEED) g_feed_state = REQ_ERR;
+                    else { strlcpy(g_sw_msg, m, sizeof(g_sw_msg)); g_sw_state = REQ_ERR; }
+                    continue;
+                }
+            }
+            diag_phase("DevX");
+            switch (j.kind) {
+            case JOB_SW_LIST: job_sw_list(); break;
+            case JOB_SW_SET:  job_sw_set(j.id, j.on); break;
+            case JOB_GATE:    job_gate(); break;
+            case JOB_FEED:    job_feed(); break;
+            }
+        }
+        if (!any && !s_wifi_up) break;
+        /* wait a minute for another tap, then Wi-Fi off */
+        EventBits_t b = xEventGroupWaitBits(s_ev, EV_JOB, pdTRUE, pdFALSE, pdMS_TO_TICKS(STAY_ON_MS));
+        if (!(b & EV_JOB)) break;
+    }
+    if (s_wifi_up) {
+        wifi_off();
+        s_wifi_up = false;
+    }
+    diag_phase("idle");
+}
+
 /* ---------------- Setup hotspot (captive portal) ---------------- */
 
 static void dns_task(void *arg)
@@ -477,8 +785,15 @@ static esp_err_t root_get(httpd_req_t *r)
         "<option value=''>Other (type below)</option></select>"
         "<label>Or type the network name</label>"
         "<input name=s2 autocapitalize=none autocomplete=off autocorrect=off>"
-        "<label>Password</label><input name=p type=password>"
-        "<button>Save</button></form>");
+        "<label>Password</label><input name=p type=password>");
+    httpd_resp_sendstr_chunk(r,
+        "<label>DevX watch key (for smart switches + notifications)</label>"
+        "<input name=k autocapitalize=none autocomplete=off autocorrect=off placeholder='");
+    httpd_resp_sendstr_chunk(r, s_key[0] ? "saved - leave empty to keep" : "from Railway: WATCH_TOKEN");
+    httpd_resp_sendstr_chunk(r,
+        "'><label>DevX server</label><input name=u autocapitalize=none autocomplete=off autocorrect=off value='");
+    send_escaped(r, s_srv);
+    httpd_resp_sendstr_chunk(r, "'><button>Save</button></form>");
     if (s_net_count) {
         httpd_resp_sendstr_chunk(r, "<p>Already saved: ");
         bool first = true;
@@ -511,11 +826,33 @@ static esp_err_t save_post(httpd_req_t *r)
     }
     body[got] = 0;
 
-    char s1[100], s2[100], pw[200];
+    char s1[100], s2[100], pw[200], key[100], srv[120];
     form_get(body, "s1", s1, sizeof(s1));
     form_get(body, "s2", s2, sizeof(s2));
     form_get(body, "p", pw, sizeof(pw));
+    form_get(body, "k", key, sizeof(key));
+    form_get(body, "u", srv, sizeof(srv));
     const char *ssid = s2[0] ? s2 : s1;
+
+    /* DevX server + watch key (optional) */
+    bool cfg_changed = false;
+    trim(key);
+    trim(srv);
+    if (key[0] && strlen(key) < sizeof(s_key)) { strlcpy(s_key, key, sizeof(s_key)); cfg_changed = true; }
+    if (srv[0] && strncmp(srv, "https://", 8) == 0 && strlen(srv) < sizeof(s_srv)) {
+        size_t l = strlen(srv);
+        while (l && srv[l - 1] == '/') srv[--l] = 0;     /* no trailing slash */
+        if (strcmp(srv, s_srv) != 0) { strlcpy(s_srv, srv, sizeof(s_srv)); cfg_changed = true; }
+    }
+    if (cfg_changed) cfg_save();
+    if (cfg_changed && (!ssid[0] || strlen(ssid) > 32)) {
+        httpd_resp_set_type(r, "text/html");
+        httpd_resp_sendstr_chunk(r, PAGE_HEAD);
+        httpd_resp_sendstr_chunk(r, "<p><b>DevX key saved.</b></p><p>You can close this page.</p></body></html>");
+        httpd_resp_sendstr_chunk(r, NULL);
+        xEventGroupSetBits(s_ev, EV_SAVED);
+        return ESP_OK;
+    }
 
     if (!ssid[0] || strlen(ssid) > 32 || strlen(pw) > 64) {
         httpd_resp_set_status(r, "302 Found");
@@ -602,7 +939,9 @@ static void net_task(void *arg)
     vTaskDelay(pdMS_TO_TICKS(1500)); /* let the watch face settle first */
     wifi_init();
     nets_load();
+    cfg_load();
     bool first = true;
+    int64_t next_sync_us = 0;
 
     for (;;) {
         if (!s_net_count) {
@@ -618,6 +957,16 @@ static void net_task(void *arg)
         }
         first = false;
 
+        /* Not time to sync yet: we only woke for a switch tap / notification check */
+        if (esp_timer_get_time() < next_sync_us) {
+            int64_t wait_ms = (next_sync_us - esp_timer_get_time()) / 1000;
+            EventBits_t b = xEventGroupWaitBits(s_ev, EV_SETUP_REQ | EV_JOB, pdFALSE, pdFALSE, pdMS_TO_TICKS(wait_ms));
+            if (b & EV_SETUP_REQ) { xEventGroupClearBits(s_ev, EV_SETUP_REQ); run_setup(); }
+            else if (b & EV_JOB) { xEventGroupClearBits(s_ev, EV_JOB); run_jobs(); }
+            continue;
+        }
+        next_sync_us = esp_timer_get_time() + (int64_t)SYNC_INTERVAL_MS * 1000;
+
         g_net_phase = "Wi-Fi";
         diag_phase("Wi-Fi");
         g_net_state = NET_CONNECTING;
@@ -629,6 +978,11 @@ static void net_task(void *arg)
             g_net_phase = "Update";
             diag_phase("Update");
             ota_check();
+            if (net_has_key()) {
+                g_net_phase = "DevX";
+                diag_phase("DevX");
+                job_feed();
+            }
             g_net_phase = "Wi-Fi off";
             diag_phase("Wi-Fi off");
             wifi_off();
@@ -639,15 +993,14 @@ static void net_task(void *arg)
             g_net_state = NET_OFFLINE;
         }
         diag_phase("idle");
-
-        EventBits_t b = xEventGroupWaitBits(s_ev, EV_SETUP_REQ, pdTRUE, pdFALSE, pdMS_TO_TICKS(SYNC_INTERVAL_MS));
-        if (b & EV_SETUP_REQ) run_setup();
     }
 }
 
 void net_start(void)
 {
     s_ev = xEventGroupCreate();
+    s_jobs = xQueueCreate(6, sizeof(net_job_t));
+    s_lock = xSemaphoreCreateMutex();
     xTaskCreate(net_task, "net", 10240, NULL, 3, NULL);
 }
 

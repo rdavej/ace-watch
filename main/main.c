@@ -32,6 +32,8 @@
 #include "diag.h"
 #include "workout.h"
 #include "sound.h"
+#include "pages.h"
+#include "settings.h"
 
 LV_FONT_DECLARE(font_time_86);
 LV_IMAGE_DECLARE(img_devx_logo_big);
@@ -48,8 +50,7 @@ static const char *TAG = "ace_watch";
 #define COL_WHITE   0xE9EEF8
 #define COL_RED     0xFF5A5A
 
-#define SCREEN_TIMEOUT_MS  20000
-#define SCREEN_BRIGHTNESS  80
+/* Screen timeout + brightness come from the Settings screen (settings.c) */
 
 /* ---------- AXP2101 power chip (battery) ---------- */
 #define AXP2101_ADDR        0x34
@@ -406,7 +407,7 @@ static void screen_on(void)
     update_battery();
     update_steps();
     lv_obj_invalidate(lv_screen_active());        /* redraws on the next frame */
-    bsp_display_brightness_set(SCREEN_BRIGHTNESS);
+    bsp_display_brightness_set(settings_brightness());
     s_screen_on = true;
     s_on_since = lv_tick_get();
     s_on_by_raise = s_wake_by_raise;
@@ -416,6 +417,12 @@ static void screen_on(void)
     s_wake_by_raise = false;
     s_wake_quiet = false;
 }
+
+/* Screens, swipe left / right: Face -> Workout -> Steps -> Alerts -> Switches -> Settings */
+enum { PG_FACE, PG_WORKOUT, PG_STEPS, PG_ALERTS, PG_SWITCHES, PG_SETTINGS, PG_N };
+static int s_page = PG_FACE;
+static void nav_go(int pg);
+static bool banner_check(void);
 
 /* Called from the motion task: light the screen straight away instead of
    waiting for the next screen-timer tick (that wait made raise-to-wake feel slow) */
@@ -468,7 +475,7 @@ static void power_timer_cb(lv_timer_t *t)
 
     /* Rest over: show the workout screen and light up */
     if (workout_tick()) {
-        workout_show(true);
+        nav_go(PG_WORKOUT);
         if (!s_screen_on && !s_palm_down) {
             s_wake_quiet = true;
             lv_display_trigger_activity(NULL);
@@ -476,6 +483,17 @@ static void power_timer_cb(lv_timer_t *t)
             lv_display_trigger_activity(NULL);   /* keep it on a full 20 s */
         }
     }
+
+    /* New DevX notification: banner + ding, light up the screen */
+    if (banner_check()) {
+        if (!s_screen_on && !s_palm_down) {
+            s_wake_quiet = true;
+            lv_display_trigger_activity(NULL);
+        } else if (s_screen_on) {
+            lv_display_trigger_activity(NULL);
+        }
+    }
+    if (s_screen_on) page_tick();
 
     /* Wrist raised: only matters when the screen is dark */
     if (g_raise_to_wake) {
@@ -495,7 +513,7 @@ static void power_timer_cb(lv_timer_t *t)
         /* A touch after a raise-wake: treat it like a normal tap-wake from now on */
         if (s_on_by_raise && (int32_t)(last_act - s_on_since) > 300) s_on_by_raise = false;
 
-        if (idle > SCREEN_TIMEOUT_MS) {
+        if (idle > settings_timeout_ms()) {
             screen_off();
         } else if (s_on_by_raise && g_wrist_down && !keep_on &&
                    now - s_on_since > RAISE_MIN_ON_MS) {
@@ -503,7 +521,7 @@ static void power_timer_cb(lv_timer_t *t)
             screen_off();
             s_block_until = now;
         }
-    } else if (idle < SCREEN_TIMEOUT_MS && (fresh || keep_on)) {
+    } else if (idle < settings_timeout_ms() && (fresh || keep_on)) {
         screen_on();
     }
 }
@@ -611,19 +629,96 @@ static void long_press_cb(lv_event_t *e)
 {
     (void)e;
     if (s_palm_down || !s_screen_on || s_palm_n > 0) return; /* a palm, not a press */
-    if (workout_visible()) return;
+    if (s_page != PG_FACE) return;   /* Wi-Fi setup only from the watch face */
     net_request_setup();
 }
 
 /* Swipe left: workout screen. Swipe right: watch face. */
+/* ---------- Screens: swipe left / right ----------
+   Face -> Workout -> Steps -> Alerts -> Switches -> Settings */
+static void nav_go(int pg)
+{
+    if (pg == s_page || pg < 0 || pg >= PG_N) return;
+    page_close();
+    workout_show(pg == PG_WORKOUT);
+    if (pg >= PG_STEPS) page_open(pg - PG_STEPS, lv_screen_active());
+    s_page = pg;
+}
+
 static void gesture_cb(lv_event_t *e)
 {
     (void)e;
     lv_indev_t *in = lv_indev_active();
     if (!in || !s_screen_on) return;
     lv_dir_t d = lv_indev_get_gesture_dir(in);
-    if (d == LV_DIR_LEFT && !workout_visible()) workout_show(true);
-    else if (d == LV_DIR_RIGHT && workout_visible()) workout_show(false);
+    if (d == LV_DIR_LEFT) nav_go(s_page + 1);
+    else if (d == LV_DIR_RIGHT) nav_go(s_page - 1);
+}
+
+/* ---------- DevX notification banner ---------- */
+static lv_obj_t *s_banner, *s_banner_title, *s_banner_body;
+static uint32_t s_banner_until;
+
+static void banner_tap_cb(lv_event_t *e)
+{
+    (void)e;
+    lv_obj_add_flag(s_banner, LV_OBJ_FLAG_HIDDEN);
+    s_banner_until = 0;
+    nav_go(PG_ALERTS);
+}
+
+static void build_banner(void)
+{
+    s_banner = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(s_banner);
+    lv_obj_set_size(s_banner, 360, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_color(s_banner, lv_color_hex(0x0A1226), 0);
+    lv_obj_set_style_bg_opa(s_banner, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(s_banner, lv_color_hex(COL_BLUE), 0);
+    lv_obj_set_style_border_width(s_banner, 2, 0);
+    lv_obj_set_style_radius(s_banner, 24, 0);
+    lv_obj_set_style_pad_all(s_banner, 14, 0);
+    lv_obj_set_flex_flow(s_banner, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(s_banner, 4, 0);
+    lv_obj_align(s_banner, LV_ALIGN_TOP_MID, 0, 28);
+    lv_obj_add_event_cb(s_banner, banner_tap_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *h = make_label(s_banner, &lv_font_montserrat_16, COL_YELLOW);
+    lv_label_set_text(h, LV_SYMBOL_BELL "  DEVX");
+    s_banner_title = make_label(s_banner, &lv_font_montserrat_20, COL_WHITE);
+    lv_obj_set_width(s_banner_title, LV_PCT(100));
+    lv_label_set_long_mode(s_banner_title, LV_LABEL_LONG_DOT);
+    s_banner_body = make_label(s_banner, &lv_font_montserrat_16, COL_GREY);
+    lv_obj_set_width(s_banner_body, LV_PCT(100));
+    lv_obj_set_height(s_banner_body, 40);
+    lv_label_set_long_mode(s_banner_body, LV_LABEL_LONG_DOT);
+    lv_obj_add_flag(s_banner, LV_OBJ_FLAG_HIDDEN);
+}
+
+/* New DevX notification(s) arrived: show the newest. Returns true if shown. */
+static bool banner_check(void)
+{
+    if (s_banner_until && (int32_t)(lv_tick_get() - s_banner_until) > 0) {
+        lv_obj_add_flag(s_banner, LV_OBJ_FLAG_HIDDEN);
+        s_banner_until = 0;
+    }
+    if (!g_feed_new || s_page == PG_ALERTS) return false;
+    if (!net_lock(10)) return false;
+    bool have = g_feed_n > 0;
+    if (have) {
+        int more = g_feed_new - 1;
+        static char tbuf[48];
+        if (more > 0) snprintf(tbuf, sizeof(tbuf), "%s (+%d)", g_feed[0].title, more);
+        else strlcpy(tbuf, g_feed[0].title, sizeof(tbuf));
+        lv_label_set_text(s_banner_title, tbuf);
+        lv_label_set_text(s_banner_body, g_feed[0].body);
+    }
+    g_feed_new = 0;
+    net_unlock();
+    if (!have) return false;
+    lv_obj_remove_flag(s_banner, LV_OBJ_FLAG_HIDDEN);
+    s_banner_until = lv_tick_get() + 8000;
+    sound_play(SOUND_NOTIFY);
+    return true;
 }
 
 /* ---------- Startup: DevX logo + loading bar ---------- */
@@ -755,6 +850,7 @@ static void build_ui(void)
     /* Workout screen (swipe left) */
     workout_build(scr);
     lv_obj_add_event_cb(scr, gesture_cb, LV_EVENT_GESTURE, NULL);
+    build_banner();
 
     /* Goal reached toast */
     s_toast = lv_obj_create(lv_layer_top());
@@ -872,6 +968,7 @@ void app_main(void)
     }
 
     set_time_from_build();
+    settings_load();
 
     bsp_display_start();
     pmu_init();
@@ -887,7 +984,7 @@ void app_main(void)
     lv_refr_now(NULL);   /* draw the full first frame before Wi-Fi starts */
     bsp_display_unlock();
 
-    bsp_display_brightness_set(SCREEN_BRIGHTNESS);
+    bsp_display_brightness_set(settings_brightness());
 
     /* We got this far, so this firmware works: keep it (no rollback) */
     esp_ota_mark_app_valid_cancel_rollback();

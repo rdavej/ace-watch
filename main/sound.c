@@ -7,11 +7,11 @@
 #include "esp_log.h"
 #include "esp_codec_dev.h"
 #include "bsp/esp-bsp.h"
+#include "settings.h"
 
 static const char *TAG = "sound";
 
 #define RATE        22050   /* same as the board's default I2S setup */
-#define VOLUME      85
 #define CHUNK       220     /* 10 ms of samples */
 
 static QueueHandle_t s_q;
@@ -50,6 +50,8 @@ static void sound_task(void *arg)
     sound_t s;
     for (;;) {
         xQueueReceive(s_q, &s, portMAX_DELAY);
+        int vol = settings_volume();
+        if (vol == 0) continue;                /* muted in Settings */
 
         if (!s_spk) {
             s_spk = bsp_audio_codec_speaker_init();
@@ -57,8 +59,8 @@ static void sound_task(void *arg)
                 ESP_LOGW(TAG, "Speaker not available");
                 continue;
             }
-            esp_codec_dev_set_out_vol(s_spk, VOLUME);
         }
+        esp_codec_dev_set_out_vol(s_spk, vol);
         esp_codec_dev_sample_info_t fs = {
             .sample_rate = RATE,
             .channel = 1,
@@ -78,6 +80,11 @@ static void sound_task(void *arg)
                     tone(0, 100);
                 }
                 tone(2205, 400);
+                break;
+            case SOUND_NOTIFY:
+                tone(1760, 90);
+                tone(0, 40);
+                tone(2205, 160);
                 break;
             case SOUND_GOAL:
                 tone(1320, 120);

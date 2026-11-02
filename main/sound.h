@@ -5,6 +5,7 @@ typedef enum {
     SOUND_TICK,   /* short tick: last 3 seconds of rest */
     SOUND_GO,     /* rest over: three beeps */
     SOUND_GOAL,   /* step goal reached: rising chirp */
+    SOUND_NOTIFY, /* DevX notification: two-tone ding */
 } sound_t;
 
 /* Start the sound task (the speaker itself is only switched on when a sound plays) */
