@@ -30,8 +30,11 @@
 #include "net.h"
 #include "motion.h"
 #include "diag.h"
+#include "workout.h"
 
 LV_FONT_DECLARE(font_time_86);
+LV_IMAGE_DECLARE(img_devx_logo_big);
+LV_IMAGE_DECLARE(img_devx_logo_small);
 
 static const char *TAG = "ace_watch";
 
@@ -186,6 +189,7 @@ static void label_printf(lv_obj_t *l, char *buf, size_t n, const char *fmt, ...)
     lv_label_set_text_static(l, buf);
 }
 static bool s_wake_by_raise = false;
+static bool s_wake_quiet = false;   /* woken by the watch itself (rest over): don't learn the angle */
 
 /* goal */
 static bool s_goal_done = false;
@@ -405,9 +409,10 @@ static void screen_on(void)
     s_on_since = lv_tick_get();
     s_on_by_raise = s_wake_by_raise;
     /* Woken by a tap: learn how the wrist is held when looking at the watch */
-    if (!s_wake_by_raise && !s_toast_until &&
+    if (!s_wake_by_raise && !s_wake_quiet && !s_toast_until &&
         lv_obj_has_flag(s_charge_panel, LV_OBJ_FLAG_HIDDEN)) g_learn_view = true;
     s_wake_by_raise = false;
+    s_wake_quiet = false;
 }
 
 static void power_timer_cb(lv_timer_t *t)
@@ -444,6 +449,17 @@ static void power_timer_cb(lv_timer_t *t)
         }
     }
     if (s_palm_down) s_block_until = now + 300;
+
+    /* Rest over: show the workout screen and light up */
+    if (workout_tick()) {
+        workout_show(true);
+        if (!s_screen_on && !s_palm_down) {
+            s_wake_quiet = true;
+            lv_display_trigger_activity(NULL);
+        } else if (s_screen_on) {
+            lv_display_trigger_activity(NULL);   /* keep it on a full 20 s */
+        }
+    }
 
     /* Wrist raised: only matters when the screen is dark */
     if (g_raise_to_wake) {
@@ -579,7 +595,71 @@ static void long_press_cb(lv_event_t *e)
 {
     (void)e;
     if (s_palm_down || !s_screen_on || s_palm_n > 0) return; /* a palm, not a press */
+    if (workout_visible()) return;
     net_request_setup();
+}
+
+/* Swipe left: workout screen. Swipe right: watch face. */
+static void gesture_cb(lv_event_t *e)
+{
+    (void)e;
+    lv_indev_t *in = lv_indev_active();
+    if (!in || !s_screen_on) return;
+    lv_dir_t d = lv_indev_get_gesture_dir(in);
+    if (d == LV_DIR_LEFT && !workout_visible()) workout_show(true);
+    else if (d == LV_DIR_RIGHT && workout_visible()) workout_show(false);
+}
+
+/* ---------- Startup: DevX logo + loading bar ---------- */
+static lv_obj_t *s_splash;
+
+static void splash_bar_cb(void *bar, int32_t v)
+{
+    lv_bar_set_value((lv_obj_t *)bar, v, LV_ANIM_OFF);
+}
+
+static void splash_done_cb(lv_anim_t *a)
+{
+    (void)a;
+    if (s_splash) {
+        lv_obj_delete_async(s_splash);   /* frees its memory; the face is underneath */
+        s_splash = NULL;
+    }
+}
+
+static void build_splash(void)
+{
+    s_splash = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(s_splash);
+    lv_obj_set_size(s_splash, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_bg_color(s_splash, lv_color_hex(COL_BG), 0);
+    lv_obj_set_style_bg_opa(s_splash, LV_OPA_COVER, 0);
+
+    lv_obj_t *logo = lv_image_create(s_splash);
+    lv_image_set_src(logo, &img_devx_logo_big);
+    lv_obj_align(logo, LV_ALIGN_CENTER, 0, -30);
+
+    lv_obj_t *bar = lv_bar_create(s_splash);
+    lv_obj_set_size(bar, 150, 6);
+    lv_bar_set_range(bar, 0, 100);
+    lv_bar_set_value(bar, 0, LV_ANIM_OFF);
+    lv_obj_set_style_radius(bar, 3, LV_PART_MAIN);
+    lv_obj_set_style_radius(bar, 3, LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(bar, lv_color_hex(COL_TRACK), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(bar, lv_color_hex(COL_BLUE), LV_PART_INDICATOR);
+    lv_obj_align(bar, LV_ALIGN_CENTER, 0, 110);
+
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, bar);
+    lv_anim_set_values(&a, 0, 100);
+    lv_anim_set_duration(&a, 2200);
+    lv_anim_set_delay(&a, 300);
+    lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
+    lv_anim_set_exec_cb(&a, splash_bar_cb);
+    lv_anim_set_completed_cb(&a, splash_done_cb);
+    lv_anim_start(&a);
 }
 
 static lv_obj_t *make_label(lv_obj_t *parent, const lv_font_t *font, uint32_t color)
@@ -597,16 +677,25 @@ static void build_ui(void)
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
     lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* Header: DEVX */
-    lv_obj_t *brand = make_label(scr, &lv_font_montserrat_20, COL_BLUE);
-    lv_label_set_text(brand, LV_SYMBOL_CHARGE " DEVX");
+    /* Header: DevX logo + DEVX */
+    lv_obj_t *hdr = lv_obj_create(scr);
+    lv_obj_remove_style_all(hdr);
+    lv_obj_set_size(hdr, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(hdr, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(hdr, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(hdr, 10, 0);
+    lv_obj_remove_flag(hdr, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_align(hdr, LV_ALIGN_TOP_MID, 0, 30);
+    lv_obj_t *logo = lv_image_create(hdr);
+    lv_image_set_src(logo, &img_devx_logo_small);
+    lv_obj_t *brand = make_label(hdr, &lv_font_montserrat_20, COL_BLUE);
+    lv_label_set_text(brand, "DEVX");
     lv_obj_set_style_text_letter_space(brand, 4, 0);
-    lv_obj_align(brand, LV_ALIGN_TOP_MID, 0, 40);
 
     /* Battery (small, under the header) */
     s_bat_label = make_label(scr, &lv_font_montserrat_16, COL_GREY);
     label_printf(s_bat_label, s_bat_buf, sizeof(s_bat_buf), "%s", "");
-    lv_obj_align(s_bat_label, LV_ALIGN_TOP_MID, 0, 70);
+    lv_obj_align(s_bat_label, LV_ALIGN_TOP_MID, 0, 72);
 
     /* Big time */
     /* Big clock font (86 px), drawn directly: no extra RAM needed */
@@ -646,6 +735,10 @@ static void build_ui(void)
     lv_obj_set_style_radius(s_steps_bar, 5, LV_PART_INDICATOR);
     lv_obj_remove_flag(s_steps_bar, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_align(s_steps_bar, LV_ALIGN_CENTER, 0, 120);
+
+    /* Workout screen (swipe left) */
+    workout_build(scr);
+    lv_obj_add_event_cb(scr, gesture_cb, LV_EVENT_GESTURE, NULL);
 
     /* Goal reached toast */
     s_toast = lv_obj_create(lv_layer_top());
@@ -767,6 +860,8 @@ void app_main(void)
     diag_phase("UI");
     bsp_display_lock(0);
     build_ui();
+    /* Logo on a normal start; skip it after a crash/freeze so the watch is back fast */
+    if (!g_diag_boot_msg[0]) build_splash();
     s_boot_msg_until = lv_tick_get() + 15000;
     lv_refr_now(NULL);   /* draw the full first frame before Wi-Fi starts */
     bsp_display_unlock();
