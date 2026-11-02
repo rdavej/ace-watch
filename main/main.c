@@ -10,6 +10,7 @@
  * - Updates itself over Wi-Fi (see net.c)
  */
 #include <stdio.h>
+#include <stdarg.h>
 #include <string.h>
 #include <time.h>
 #include <sys/time.h>
@@ -154,6 +155,24 @@ static bool s_steps_ready = false; /* false until the first update after boot */
 static lv_obj_t *s_foot;
 static lv_obj_t *s_setup_panel;
 static bool s_screen_on = true;
+static esp_pm_lock_handle_t s_pm_screen = NULL; /* full CPU speed while the screen is on */
+
+/* Fixed text buffers: labels point at these instead of allocating memory
+   on every update (keeps RAM free for Wi-Fi / secure connections) */
+static char s_time_buf[8], s_date_buf[24], s_bat_buf[40], s_steps_buf[16];
+static char s_charge_buf[8], s_foot_buf[48];
+
+static void label_printf(lv_obj_t *l, char *buf, size_t n, const char *fmt, ...)
+{
+    char tmp[64];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(tmp, sizeof(tmp), fmt, ap);
+    va_end(ap);
+    if (lv_label_get_text(l) == buf && strcmp(tmp, buf) == 0) return; /* unchanged: no redraw */
+    strlcpy(buf, tmp, n);
+    lv_label_set_text_static(l, buf);
+}
 static bool s_wake_by_raise = false;
 
 /* goal */
@@ -181,12 +200,12 @@ static void update_clock(void)
 
     int hour12 = t.tm_hour % 12;
     if (hour12 == 0) hour12 = 12;
-    lv_label_set_text_fmt(s_time, "%d:%02d", hour12, t.tm_min);
+    label_printf(s_time, s_time_buf, sizeof(s_time_buf), "%d:%02d", hour12, t.tm_min);
 
     static const char *wd[] = {"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"};
     static const char *mo[] = {"JAN", "FEB", "MAR", "APR", "MAY", "JUN",
                                "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"};
-    lv_label_set_text_fmt(s_date, "%s  %d %s", wd[t.tm_wday], t.tm_mday, mo[t.tm_mon]);
+    label_printf(s_date, s_date_buf, sizeof(s_date_buf), "%s  %d %s", wd[t.tm_wday], t.tm_mday, mo[t.tm_mon]);
 }
 
 static void update_battery(void)
@@ -194,7 +213,7 @@ static void update_battery(void)
     bool charging;
     int pct = battery_percent(&charging);
     if (pct < 0) {
-        lv_label_set_text(s_bat_label, LV_SYMBOL_BATTERY_EMPTY " --");
+        label_printf(s_bat_label, s_bat_buf, sizeof(s_bat_buf), "%s", LV_SYMBOL_BATTERY_EMPTY " --");
         return;
     }
     const char *icon = charging ? LV_SYMBOL_CHARGE :
@@ -203,9 +222,9 @@ static void update_battery(void)
                        pct > 30 ? LV_SYMBOL_BATTERY_2 :
                        pct > 10 ? LV_SYMBOL_BATTERY_1 : LV_SYMBOL_BATTERY_EMPTY;
     if (!charging && pct < 5) {
-        lv_label_set_text_fmt(s_bat_label, LV_SYMBOL_WARNING " %d%%  Charge me", pct);
+        label_printf(s_bat_label, s_bat_buf, sizeof(s_bat_buf), LV_SYMBOL_WARNING " %d%%  Charge me", pct);
     } else {
-        lv_label_set_text_fmt(s_bat_label, "%s %d%%", icon, pct);
+        label_printf(s_bat_label, s_bat_buf, sizeof(s_bat_buf), "%s %d%%", icon, pct);
     }
     lv_obj_set_style_text_color(s_bat_label, lv_color_hex((!charging && pct < 15) ? COL_RED : COL_GREY), 0);
     s_charge_pct_val = pct;
@@ -217,9 +236,9 @@ static void update_steps(void)
     if (n == s_shown_steps) return;
     s_shown_steps = n;
     if (n >= 1000) {
-        lv_label_set_text_fmt(s_steps, "%lu,%03lu", (unsigned long)(n / 1000), (unsigned long)(n % 1000));
+        label_printf(s_steps, s_steps_buf, sizeof(s_steps_buf), "%lu,%03lu", (unsigned long)(n / 1000), (unsigned long)(n % 1000));
     } else {
-        lv_label_set_text_fmt(s_steps, "%lu", (unsigned long)n);
+        label_printf(s_steps, s_steps_buf, sizeof(s_steps_buf), "%lu", (unsigned long)n);
     }
     lv_bar_set_value(s_steps_bar, n > STEP_GOAL ? STEP_GOAL : (int32_t)n, LV_ANIM_OFF);
 
@@ -263,7 +282,7 @@ static void charge_anim_cb(lv_timer_t *t)
         }
     }
     s_plate_frame++;
-    lv_label_set_text_fmt(s_charge_pct, "%d%%", s_charge_pct_val);
+    label_printf(s_charge_pct, s_charge_buf, sizeof(s_charge_buf), "%d%%", s_charge_pct_val);
 
     if ((int32_t)(lv_tick_get() - s_charge_until) > 0) {
         lv_obj_add_flag(s_charge_panel, LV_OBJ_FLAG_HIDDEN);
@@ -320,8 +339,10 @@ static void power_timer_cb(lv_timer_t *t)
     if (idle > SCREEN_TIMEOUT_MS && s_screen_on) {
         bsp_display_brightness_set(0);
         lv_display_enable_invalidation(NULL, false); /* stop redrawing while dark */
+        if (s_pm_screen) esp_pm_lock_release(s_pm_screen); /* now allowed to slow down / nap */
         s_screen_on = false;
     } else if (idle < SCREEN_TIMEOUT_MS && !s_screen_on) {
+        if (s_pm_screen) esp_pm_lock_acquire(s_pm_screen); /* full speed while visible */
         lv_display_enable_invalidation(NULL, true);
         update_clock();
         update_battery();
@@ -383,27 +404,27 @@ static void update_status(void)
     const char *ver = esp_app_get_description()->version;
     switch (st) {
     case NET_NO_WIFI:
-        lv_label_set_text(s_foot, "Hold screen 3s for Wi-Fi setup");
+        label_printf(s_foot, s_foot_buf, sizeof(s_foot_buf), "%s", "Hold screen 3s for Wi-Fi setup");
         break;
     case NET_CONNECTING:
     case NET_SYNCING:
-        lv_label_set_text_fmt(s_foot, "v%s  " LV_SYMBOL_WIFI " syncing...", ver);
+        label_printf(s_foot, s_foot_buf, sizeof(s_foot_buf), "v%s  " LV_SYMBOL_WIFI " syncing...", ver);
         break;
     case NET_UPDATING:
-        lv_label_set_text(s_foot, LV_SYMBOL_DOWNLOAD " Updating... keep watch on");
+        label_printf(s_foot, s_foot_buf, sizeof(s_foot_buf), "%s", LV_SYMBOL_DOWNLOAD " Updating... keep watch on");
         break;
     case NET_OFFLINE:
-        lv_label_set_text_fmt(s_foot, "v%s  offline", ver);
+        label_printf(s_foot, s_foot_buf, sizeof(s_foot_buf), "v%s  offline", ver);
         break;
     case NET_OK:
         if (g_net_last_sync[0]) {
-            lv_label_set_text_fmt(s_foot, "v%s  " LV_SYMBOL_WIFI " %s", ver, g_net_last_sync);
+            label_printf(s_foot, s_foot_buf, sizeof(s_foot_buf), "v%s  " LV_SYMBOL_WIFI " %s", ver, g_net_last_sync);
         } else {
-            lv_label_set_text_fmt(s_foot, "v%s  " LV_SYMBOL_WIFI, ver);
+            label_printf(s_foot, s_foot_buf, sizeof(s_foot_buf), "v%s  " LV_SYMBOL_WIFI, ver);
         }
         break;
     default:
-        lv_label_set_text_fmt(s_foot, "ACE WATCH  v%s", ver);
+        label_printf(s_foot, s_foot_buf, sizeof(s_foot_buf), "ACE WATCH  v%s", ver);
         break;
     }
 }
@@ -451,19 +472,19 @@ static void build_ui(void)
 
     /* Battery (small, under the header) */
     s_bat_label = make_label(scr, &lv_font_montserrat_16, COL_GREY);
-    lv_label_set_text(s_bat_label, "");
+    label_printf(s_bat_label, s_bat_buf, sizeof(s_bat_buf), "%s", "");
     lv_obj_align(s_bat_label, LV_ALIGN_TOP_MID, 0, 70);
 
     /* Big time */
     /* Big clock font (86 px), drawn directly: no extra RAM needed */
     s_time = make_label(scr, &font_time_86, COL_WHITE);
-    lv_label_set_text(s_time, "--:--");
+    label_printf(s_time, s_time_buf, sizeof(s_time_buf), "%s", "--:--");
     lv_obj_align(s_time, LV_ALIGN_CENTER, 0, -62);
 
     /* Date */
     s_date = make_label(scr, &lv_font_montserrat_24, COL_BLUE);
     lv_obj_set_style_text_letter_space(s_date, 3, 0);
-    lv_label_set_text(s_date, "");
+    label_printf(s_date, s_date_buf, sizeof(s_date_buf), "%s", "");
     lv_obj_align(s_date, LV_ALIGN_CENTER, 0, 18);
 
     /* Steps: "6,240 / 8,000 steps" + progress bar */
@@ -477,7 +498,7 @@ static void build_ui(void)
     lv_obj_align(row, LV_ALIGN_CENTER, 0, 84);
 
     s_steps = make_label(row, &lv_font_montserrat_24, COL_YELLOW);
-    lv_label_set_text(s_steps, "0");
+    label_printf(s_steps, s_steps_buf, sizeof(s_steps_buf), "%s", "0");
     lv_obj_t *goal = make_label(row, &lv_font_montserrat_16, COL_GREY);
     lv_label_set_text(goal, "/ 8,000 steps");
     lv_obj_set_style_pad_bottom(goal, 2, 0);
@@ -548,7 +569,7 @@ static void build_ui(void)
     }
 
     s_charge_pct = make_label(s_charge_panel, &lv_font_montserrat_48, COL_YELLOW);
-    lv_label_set_text(s_charge_pct, "");
+    label_printf(s_charge_pct, s_charge_buf, sizeof(s_charge_buf), "%s", "");
     lv_obj_align(s_charge_pct, LV_ALIGN_CENTER, 0, 70);
 
     lv_obj_t *cl = make_label(s_charge_panel, &lv_font_montserrat_20, COL_BLUE);
@@ -559,7 +580,7 @@ static void build_ui(void)
 
     /* Footer */
     s_foot = make_label(scr, &lv_font_montserrat_16, COL_GREY);
-    lv_label_set_text(s_foot, "");
+    label_printf(s_foot, s_foot_buf, sizeof(s_foot_buf), "%s", "");
     lv_obj_set_style_text_letter_space(s_foot, 1, 0);
     lv_obj_align(s_foot, LV_ALIGN_BOTTOM_MID, 0, -44);
 
@@ -591,7 +612,11 @@ void app_main(void)
         .min_freq_mhz = 40,
         .light_sleep_enable = true,
     };
-    if (esp_pm_configure(&pm) != ESP_OK) ESP_LOGW(TAG, "Power management not available");
+    if (esp_pm_configure(&pm) != ESP_OK) {
+        ESP_LOGW(TAG, "Power management not available");
+    } else if (esp_pm_lock_create(ESP_PM_CPU_FREQ_MAX, 0, "screen", &s_pm_screen) == ESP_OK) {
+        esp_pm_lock_acquire(s_pm_screen); /* screen starts on */
+    }
 
     esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
