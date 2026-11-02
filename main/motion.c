@@ -7,7 +7,6 @@
  */
 #include "motion.h"
 
-#include <math.h>
 #include <time.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -15,6 +14,9 @@
 #include "esp_timer.h"
 #include "nvs.h"
 #include "bsp/esp-bsp.h"
+#ifdef M_PI
+#undef M_PI /* qmi8658.h defines its own */
+#endif
 #include "qmi8658.h"
 
 static const char *TAG = "motion";
@@ -108,7 +110,7 @@ static void motion_task(void *arg)
 
         float x, y, z;
         if (qmi8658_read_accel_mg(&s_imu, &x, &y, &z) != ESP_OK) continue;
-        float mag = sqrtf(x * x + y * y + z * z);
+        float mag = __builtin_sqrtf(x * x + y * y + z * z);
 
         /* ----- Steps ----- */
         smooth += 0.35f * (mag - smooth);
@@ -138,7 +140,7 @@ static void motion_task(void *arg)
         /* ----- Raise to wake -----
          * Arm down: gravity mostly sideways (|z| small).
          * Looking at the watch: gravity through the screen (|z| large). */
-        float az = fabsf(z);
+        float az = __builtin_fabsf(z);
         if (az < 450.0f) {
             last_down_ms = now_ms;
             up_samples = 0;
