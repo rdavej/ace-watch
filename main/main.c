@@ -4,6 +4,7 @@
  *
  * - Time + date (from Wi-Fi time sync; falls back to the build time)
  * - Battery % from the AXP2101 power chip
+ * - Steps today + raise to wake (motion.c)
  * - Screen turns off after 10 s, tap to wake
  * - Hold the screen 3 s to open Wi-Fi setup
  * - Updates itself over Wi-Fi (see net.c)
@@ -24,6 +25,7 @@
 #include "esp_ota_ops.h"
 #include "esp_heap_caps.h"
 #include "net.h"
+#include "motion.h"
 
 LV_FONT_DECLARE(font_time_86);
 
@@ -135,7 +137,9 @@ static void set_time_from_build(void)
 static lv_obj_t *s_time;
 static lv_obj_t *s_date;
 static lv_obj_t *s_bat_label;
-static lv_obj_t *s_bat_bar;
+static lv_obj_t *s_steps;
+static lv_obj_t *s_steps_bar;
+static uint32_t s_shown_steps = UINT32_MAX;
 static lv_obj_t *s_foot;
 static lv_obj_t *s_setup_panel;
 static bool s_screen_on = true;
@@ -164,18 +168,35 @@ static void update_battery(void)
     bool charging;
     int pct = battery_percent(&charging);
     if (pct < 0) {
-        lv_label_set_text(s_bat_label, "Battery --");
-        lv_bar_set_value(s_bat_bar, 0, LV_ANIM_OFF);
+        lv_label_set_text(s_bat_label, LV_SYMBOL_BATTERY_EMPTY " --");
         return;
     }
-    lv_label_set_text_fmt(s_bat_label, "%s %d%%", charging ? LV_SYMBOL_CHARGE : LV_SYMBOL_BATTERY_FULL, pct);
-    lv_bar_set_value(s_bat_bar, pct, LV_ANIM_OFF);
+    const char *icon = charging ? LV_SYMBOL_CHARGE :
+                       pct > 80 ? LV_SYMBOL_BATTERY_FULL :
+                       pct > 55 ? LV_SYMBOL_BATTERY_3 :
+                       pct > 30 ? LV_SYMBOL_BATTERY_2 :
+                       pct > 10 ? LV_SYMBOL_BATTERY_1 : LV_SYMBOL_BATTERY_EMPTY;
+    lv_label_set_text_fmt(s_bat_label, "%s %d%%", icon, pct);
+}
+
+static void update_steps(void)
+{
+    uint32_t n = g_steps_today;
+    if (n == s_shown_steps) return;
+    s_shown_steps = n;
+    if (n >= 1000) {
+        lv_label_set_text_fmt(s_steps, "%lu,%03lu", (unsigned long)(n / 1000), (unsigned long)(n % 1000));
+    } else {
+        lv_label_set_text_fmt(s_steps, "%lu", (unsigned long)n);
+    }
+    lv_bar_set_value(s_steps_bar, n > STEP_GOAL ? STEP_GOAL : (int32_t)n, LV_ANIM_OFF);
 }
 
 static void clock_timer_cb(lv_timer_t *t)
 {
     (void)t;
     update_clock();
+    update_steps();
 }
 
 static void battery_timer_cb(lv_timer_t *t)
@@ -188,6 +209,10 @@ static void battery_timer_cb(lv_timer_t *t)
 static void power_timer_cb(lv_timer_t *t)
 {
     (void)t;
+    if (g_raise_to_wake) {
+        g_raise_to_wake = false;
+        lv_display_trigger_activity(NULL); /* wrist raised: count as a touch */
+    }
     uint32_t idle = lv_display_get_inactive_time(NULL);
     if (g_net_state == NET_SETUP || g_net_state == NET_UPDATING) {
         idle = 0; /* keep the screen on while setting up / updating */
@@ -200,6 +225,7 @@ static void power_timer_cb(lv_timer_t *t)
         s_screen_on = true;
         update_clock();
         update_battery();
+        update_steps();
     }
 }
 
@@ -314,34 +340,51 @@ static void build_ui(void)
     lv_obj_t *brand = make_label(scr, &lv_font_montserrat_20, COL_BLUE);
     lv_label_set_text(brand, LV_SYMBOL_CHARGE " DEVX");
     lv_obj_set_style_text_letter_space(brand, 4, 0);
-    lv_obj_align(brand, LV_ALIGN_TOP_MID, 0, 48);
+    lv_obj_align(brand, LV_ALIGN_TOP_MID, 0, 40);
+
+    /* Battery (small, under the header) */
+    s_bat_label = make_label(scr, &lv_font_montserrat_16, COL_GREY);
+    lv_label_set_text(s_bat_label, "");
+    lv_obj_align(s_bat_label, LV_ALIGN_TOP_MID, 0, 70);
 
     /* Big time */
     /* Big clock font (86 px), drawn directly: no extra RAM needed */
     s_time = make_label(scr, &font_time_86, COL_WHITE);
     lv_label_set_text(s_time, "--:--");
-    lv_obj_align(s_time, LV_ALIGN_CENTER, 0, -70);
+    lv_obj_align(s_time, LV_ALIGN_CENTER, 0, -62);
 
     /* Date */
     s_date = make_label(scr, &lv_font_montserrat_24, COL_BLUE);
     lv_obj_set_style_text_letter_space(s_date, 3, 0);
     lv_label_set_text(s_date, "");
-    lv_obj_align(s_date, LV_ALIGN_CENTER, 0, 20);
+    lv_obj_align(s_date, LV_ALIGN_CENTER, 0, 18);
 
-    /* Battery */
-    s_bat_label = make_label(scr, &lv_font_montserrat_24, COL_YELLOW);
-    lv_label_set_text(s_bat_label, "");
-    lv_obj_align(s_bat_label, LV_ALIGN_CENTER, 0, 92);
+    /* Steps: "6,240 / 8,000 steps" + progress bar */
+    lv_obj_t *row = lv_obj_create(scr);
+    lv_obj_remove_style_all(row);
+    lv_obj_set_size(row, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
+    lv_obj_set_style_pad_column(row, 8, 0);
+    lv_obj_remove_flag(row, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_align(row, LV_ALIGN_CENTER, 0, 84);
 
-    s_bat_bar = lv_bar_create(scr);
-    lv_obj_set_size(s_bat_bar, 260, 10);
-    lv_bar_set_range(s_bat_bar, 0, 100);
-    lv_obj_set_style_bg_color(s_bat_bar, lv_color_hex(COL_TRACK), LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(s_bat_bar, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(s_bat_bar, lv_color_hex(COL_BLUE), LV_PART_INDICATOR);
-    lv_obj_set_style_radius(s_bat_bar, 5, LV_PART_MAIN);
-    lv_obj_set_style_radius(s_bat_bar, 5, LV_PART_INDICATOR);
-    lv_obj_align(s_bat_bar, LV_ALIGN_CENTER, 0, 128);
+    s_steps = make_label(row, &lv_font_montserrat_24, COL_YELLOW);
+    lv_label_set_text(s_steps, "0");
+    lv_obj_t *goal = make_label(row, &lv_font_montserrat_16, COL_GREY);
+    lv_label_set_text(goal, "/ 8,000 steps");
+    lv_obj_set_style_pad_bottom(goal, 2, 0);
+
+    s_steps_bar = lv_bar_create(scr);
+    lv_obj_set_size(s_steps_bar, 260, 10);
+    lv_bar_set_range(s_steps_bar, 0, STEP_GOAL);
+    lv_obj_set_style_bg_color(s_steps_bar, lv_color_hex(COL_TRACK), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(s_steps_bar, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_steps_bar, lv_color_hex(COL_BLUE), LV_PART_INDICATOR);
+    lv_obj_set_style_radius(s_steps_bar, 5, LV_PART_MAIN);
+    lv_obj_set_style_radius(s_steps_bar, 5, LV_PART_INDICATOR);
+    lv_obj_remove_flag(s_steps_bar, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_align(s_steps_bar, LV_ALIGN_CENTER, 0, 120);
 
     /* Footer */
     s_foot = make_label(scr, &lv_font_montserrat_16, COL_GREY);
@@ -356,6 +399,7 @@ static void build_ui(void)
 
     update_clock();
     update_battery();
+    update_steps();
 
     lv_timer_create(clock_timer_cb, 1000, NULL);
     lv_timer_create(battery_timer_cb, 5000, NULL);
@@ -379,6 +423,7 @@ void app_main(void)
 
     bsp_display_start();
     pmu_init();
+    motion_start();
 
     bsp_display_lock(0);
     build_ui();

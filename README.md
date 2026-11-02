@@ -3,7 +3,9 @@
 DevX / Ace firmware for the Waveshare ESP32-C6-Touch-AMOLED-2.06 (410 × 502 AMOLED).
 
 ## Features
-- DevX Pulse face: time, date, battery % (Electric blue look)
+- DevX Pulse face: time, date, battery %, steps today / 8,000 goal (Electric blue look)
+- Step counter (QMI8658 motion sensor, counts only in a walking rhythm; saved, resets at midnight)
+- Raise to wake: lift your wrist to look and the screen turns on
 - Screen off after 20 s, tap to wake
 - **Wi-Fi setup:** hold the screen 3 s (or first boot) → join `Ace-Watch-Setup` on your phone → pick Wi-Fi + password. Remembers up to 5 networks.
 - Every 30 min: joins the strongest known Wi-Fi, syncs the time, checks for an update, then turns Wi-Fi off to save battery
