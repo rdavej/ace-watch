@@ -25,6 +25,9 @@ void net_start(void);
 /* Open the "Ace-Watch-Setup" hotspot to add a Wi-Fi network */
 void net_request_setup(void);
 
+/* Sync right away (quick panel "Sync now") */
+void net_sync_now(void);
+
 /* Close the setup hotspot now (Close button on the watch) */
 void net_close_setup(void);
 

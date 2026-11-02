@@ -169,7 +169,12 @@ static lv_obj_t *s_steps;
 static lv_obj_t *s_ring;          /* steps ring around the face */
 static lv_obj_t *s_sets_lbl, *s_alerts_lbl;
 static char s_sets_buf[16], s_alerts_buf[16];
-static int s_unread = 0;          /* DevX alerts not looked at yet */
+static int s_unread = 0;
+static bool s_bat_charging = false;
+static void panel_open(void);
+static void panel_close(void);
+static void panel_update(void);
+static lv_obj_t *s_qpanel;         /* pull-down quick panel (built when opened) */          /* DevX alerts not looked at yet */
 static uint32_t s_shown_steps = UINT32_MAX;
 static bool s_steps_ready = false; /* false until the first update after boot */
 static lv_obj_t *s_foot;
@@ -264,6 +269,7 @@ static void update_battery(void)
     }
     lv_obj_set_style_text_color(s_bat_label, lv_color_hex((!charging && pct < 15) ? COL_RED : COL_GREY), 0);
     s_charge_pct_val = pct;
+    s_bat_charging = charging;
 }
 
 static void update_steps(void)
@@ -649,6 +655,7 @@ static void status_timer_cb(lv_timer_t *t)
 {
     (void)t;
     update_status();
+    panel_update();
 }
 
 static void long_press_cb(lv_event_t *e)
@@ -672,14 +679,25 @@ static void nav_go(int pg)
     s_page = pg;
 }
 
+static uint32_t s_last_nav;
+
 static void gesture_cb(lv_event_t *e)
 {
     (void)e;
     lv_indev_t *in = lv_indev_active();
     if (!in || !s_screen_on) return;
+    /* one swipe = one screen: ignore the rest of this touch, and swipes too close together */
+    if (lv_tick_elaps(s_last_nav) < 350) { lv_indev_wait_release(in); return; }
     lv_dir_t d = lv_indev_get_gesture_dir(in);
+    bool moved = true;
     if (d == LV_DIR_LEFT) nav_go(s_page + 1);
     else if (d == LV_DIR_RIGHT) nav_go(s_page - 1);
+    else if (d == LV_DIR_BOTTOM && s_page == PG_FACE) panel_open();   /* pull down from the face */
+    else moved = false;
+    if (moved) {
+        s_last_nav = lv_tick_get();
+        lv_indev_wait_release(in);
+    }
 }
 
 /* ---------- Ace pop-up: a DevX notification slides up over the face ---------- */
@@ -816,6 +834,160 @@ static bool banner_check(void)
     lv_obj_remove_flag(s_pop, LV_OBJ_FLAG_HIDDEN);
     sound_play(SOUND_NOTIFY);
     return true;
+}
+
+/* ---------- Quick panel: swipe down on the face ---------- */
+static lv_obj_t *s_qp_wifi, *s_qp_bat, *s_qp_bright, *s_qp_sound;
+static char s_qp_wifi_buf[48], s_qp_bat_buf[32], s_qp_bright_buf[24], s_qp_sound_buf[24];
+
+static void qp_gesture_cb(lv_event_t *e)
+{
+    (void)e;
+    lv_indev_t *in = lv_indev_active();
+    if (in && lv_indev_get_gesture_dir(in) == LV_DIR_TOP) {
+        lv_indev_wait_release(in);
+        panel_close();
+    }
+}
+
+static void qp_close_cb(lv_event_t *e) { (void)e; panel_close(); }
+
+static void qp_tile_cb(lv_event_t *e)
+{
+    int which = (int)(intptr_t)lv_event_get_user_data(e);
+    switch (which) {
+    case 0: net_sync_now(); break;
+    case 1:
+        g_set.bright = (g_set.bright + 1) % 4;
+        settings_save();
+        bsp_display_brightness_set(settings_brightness());
+        break;
+    case 2:
+        g_set.volume = (g_set.volume + 1) % 3;
+        settings_save();
+        sound_play(SOUND_TICK);
+        break;
+    case 3: panel_close(); net_request_setup(); return;
+    }
+    panel_update();
+}
+
+static lv_obj_t *qp_tile(lv_obj_t *grid, const char *icon, const char *name, int which, lv_obj_t **val, char *buf)
+{
+    lv_obj_t *t = lv_obj_create(grid);
+    lv_obj_remove_style_all(t);
+    lv_obj_set_size(t, 168, 104);
+    lv_obj_set_style_radius(t, 24, 0);
+    lv_obj_set_style_bg_color(t, lv_color_hex(0x0A1226), 0);
+    lv_obj_set_style_bg_color(t, lv_color_hex(0x16223F), LV_STATE_PRESSED);
+    lv_obj_set_style_bg_opa(t, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_all(t, 16, 0);
+    lv_obj_set_flex_flow(t, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(t, 6, 0);
+    lv_obj_add_event_cb(t, qp_tile_cb, LV_EVENT_CLICKED, (void *)(intptr_t)which);
+    lv_obj_t *i = make_label(t, &lv_font_montserrat_24, COL_BLUE);
+    lv_label_set_text(i, icon);
+    lv_obj_t *n = make_label(t, &lv_font_montserrat_16, COL_WHITE);
+    lv_label_set_text(n, name);
+    if (val) {
+        *val = make_label(t, &lv_font_montserrat_16, COL_YELLOW);
+        lv_label_set_text_static(*val, buf);
+    }
+    return t;
+}
+
+static void panel_update(void)
+{
+    if (!s_qpanel) return;
+    const char *w;
+    char tmp[48];
+    switch (g_net_state) {
+    case NET_CONNECTING:
+    case NET_SYNCING:  snprintf(tmp, sizeof(tmp), "Syncing: %s...", (const char *)g_net_phase); w = tmp; break;
+    case NET_UPDATING: w = "Installing an update..."; break;
+    case NET_OFFLINE:  w = "Offline - no known Wi-Fi nearby"; break;
+    case NET_NO_WIFI:  w = "No Wi-Fi saved yet"; break;
+    case NET_SETUP:    w = "Wi-Fi setup open"; break;
+    default:
+        if (g_net_last_sync[0]) { snprintf(tmp, sizeof(tmp), "Synced at %s", g_net_last_sync); w = tmp; }
+        else w = "Not synced yet";
+        break;
+    }
+    label_printf(s_qp_wifi, s_qp_wifi_buf, sizeof(s_qp_wifi_buf), LV_SYMBOL_WIFI "  %s", w);
+    label_printf(s_qp_bat, s_qp_bat_buf, sizeof(s_qp_bat_buf), "%s  %d%%%s",
+                 s_bat_charging ? LV_SYMBOL_CHARGE : LV_SYMBOL_BATTERY_FULL, s_charge_pct_val,
+                 s_bat_charging ? "  charging" : "");
+    static const char *const BR[4] = {"Low", "Mid", "High", "Max"};
+    static const char *const VO[3] = {"Off", "Low", "High"};
+    label_printf(s_qp_bright, s_qp_bright_buf, sizeof(s_qp_bright_buf), "%s", BR[g_set.bright & 3]);
+    label_printf(s_qp_sound, s_qp_sound_buf, sizeof(s_qp_sound_buf), "%s", VO[g_set.volume % 3]);
+}
+
+static void panel_open(void)
+{
+    if (s_qpanel) return;
+    s_qpanel = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(s_qpanel);
+    lv_obj_set_size(s_qpanel, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_bg_color(s_qpanel, lv_color_hex(COL_BG), 0);
+    lv_obj_set_style_bg_opa(s_qpanel, LV_OPA_COVER, 0);
+    lv_obj_remove_flag(s_qpanel, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(s_qpanel, qp_gesture_cb, LV_EVENT_GESTURE, NULL);
+
+    /* status: Wi-Fi + battery */
+    s_qp_wifi = make_label(s_qpanel, &lv_font_montserrat_16, COL_WHITE);
+    s_qp_wifi_buf[0] = 0;
+    lv_label_set_text_static(s_qp_wifi, s_qp_wifi_buf);
+    lv_obj_align(s_qp_wifi, LV_ALIGN_TOP_MID, 0, 34);
+    s_qp_bat = make_label(s_qpanel, &lv_font_montserrat_16, COL_GREY);
+    s_qp_bat_buf[0] = 0;
+    lv_label_set_text_static(s_qp_bat, s_qp_bat_buf);
+    lv_obj_align(s_qp_bat, LV_ALIGN_TOP_MID, 0, 62);
+
+    /* 2 x 2 quick buttons */
+    lv_obj_t *grid = lv_obj_create(s_qpanel);
+    lv_obj_remove_style_all(grid);
+    lv_obj_set_size(grid, 350, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_style_pad_column(grid, 14, 0);
+    lv_obj_set_style_pad_row(grid, 14, 0);
+    lv_obj_remove_flag(grid, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_align(grid, LV_ALIGN_TOP_MID, 0, 104);
+    s_qp_bright_buf[0] = s_qp_sound_buf[0] = 0;
+    qp_tile(grid, LV_SYMBOL_REFRESH, "Sync now", 0, NULL, NULL);
+    qp_tile(grid, LV_SYMBOL_IMAGE, "Brightness", 1, &s_qp_bright, s_qp_bright_buf);
+    qp_tile(grid, LV_SYMBOL_VOLUME_MAX, "Sound", 2, &s_qp_sound, s_qp_sound_buf);
+    qp_tile(grid, LV_SYMBOL_WIFI, "Wi-Fi setup", 3, NULL, NULL);
+
+    /* close */
+    lv_obj_t *c = lv_obj_create(s_qpanel);
+    lv_obj_remove_style_all(c);
+    lv_obj_set_size(c, 180, 50);
+    lv_obj_set_style_radius(c, 25, 0);
+    lv_obj_set_style_border_width(c, 2, 0);
+    lv_obj_set_style_border_color(c, lv_color_hex(COL_TRACK), 0);
+    lv_obj_set_style_bg_color(c, lv_color_hex(0x16223F), LV_STATE_PRESSED);
+    lv_obj_set_style_bg_opa(c, LV_OPA_COVER, LV_STATE_PRESSED);
+    lv_obj_align(c, LV_ALIGN_BOTTOM_MID, 0, -52);
+    lv_obj_add_event_cb(c, qp_close_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *cl = make_label(c, &lv_font_montserrat_16, COL_GREY);
+    lv_label_set_text(cl, LV_SYMBOL_UP "  Close");
+    lv_obj_center(cl);
+
+    lv_obj_t *v = make_label(s_qpanel, &lv_font_montserrat_16, COL_GREY);
+    char vb[32];
+    snprintf(vb, sizeof(vb), "Ace Watch v%s", esp_app_get_description()->version);
+    lv_label_set_text(v, vb);
+    lv_obj_align(v, LV_ALIGN_BOTTOM_MID, 0, -20);
+
+    panel_update();
+}
+
+static void panel_close(void)
+{
+    if (!s_qpanel) return;
+    lv_obj_delete_async(s_qpanel);   /* frees its memory */
+    s_qpanel = NULL;
 }
 
 /* ---------- Startup: DevX logo + loading bar ---------- */

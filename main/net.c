@@ -66,6 +66,8 @@ static EventGroupHandle_t s_ev;
 #define EV_SETUP_REQ  BIT2
 #define EV_SAVED      BIT3
 #define EV_JOB        BIT4
+#define EV_SYNC       BIT5
+#define OFFLINE_RETRY_MS (5 * 60 * 1000)   /* out of Wi-Fi range: try again sooner */
 
 #define DEFAULT_SERVER  "https://app.poweredbydevx.com"
 #define STAY_ON_MS      60000   /* after a switch tap, keep Wi-Fi up this long for the next tap */
@@ -1037,7 +1039,12 @@ static void net_task(void *arg)
         /* Not time to sync yet: we only woke for a switch tap / notification check */
         if (esp_timer_get_time() < next_sync_us) {
             int64_t wait_ms = (next_sync_us - esp_timer_get_time()) / 1000;
-            EventBits_t b = xEventGroupWaitBits(s_ev, EV_SETUP_REQ | EV_JOB, pdFALSE, pdFALSE, pdMS_TO_TICKS(wait_ms));
+            EventBits_t b = xEventGroupWaitBits(s_ev, EV_SETUP_REQ | EV_JOB | EV_SYNC, pdFALSE, pdFALSE, pdMS_TO_TICKS(wait_ms));
+            if (b & EV_SYNC) {                 /* "Sync now" from the quick panel */
+                xEventGroupClearBits(s_ev, EV_SYNC);
+                next_sync_us = 0;
+                continue;
+            }
             if (b & EV_SETUP_REQ) {
                 xEventGroupClearBits(s_ev, EV_SETUP_REQ);
                 run_setup();
@@ -1072,6 +1079,7 @@ static void net_task(void *arg)
             diag_phase("Wi-Fi off");
             wifi_off();
             g_net_state = NET_OFFLINE;
+            next_sync_us = esp_timer_get_time() + (int64_t)OFFLINE_RETRY_MS * 1000;
         }
         diag_phase("idle");
     }
@@ -1083,6 +1091,11 @@ void net_start(void)
     s_jobs = xQueueCreate(6, sizeof(net_job_t));
     s_lock = xSemaphoreCreateMutex();
     xTaskCreate(net_task, "net", 10240, NULL, 3, NULL);
+}
+
+void net_sync_now(void)
+{
+    if (s_ev && g_net_state != NET_SETUP && g_net_state != NET_UPDATING) xEventGroupSetBits(s_ev, EV_SYNC);
 }
 
 void net_close_setup(void)
