@@ -865,8 +865,8 @@ static bool banner_check(void)
 }
 
 /* ---------- Quick panel: swipe down on the face ---------- */
-static lv_obj_t *s_qp_wifi, *s_qp_bat, *s_qp_bright, *s_qp_sound;
-static char s_qp_wifi_buf[48], s_qp_bat_buf[32], s_qp_bright_buf[24], s_qp_sound_buf[24];
+static lv_obj_t *s_qp_wifi, *s_qp_bat, *s_qp_bright, *s_qp_sound, *s_qp_live, *s_qp_tmo;
+static char s_qp_wifi_buf[48], s_qp_bat_buf[32], s_qp_bright_buf[24], s_qp_sound_buf[24], s_qp_live_buf[8], s_qp_tmo_buf[8];
 
 static void qp_gesture_cb(lv_event_t *e)
 {
@@ -896,6 +896,15 @@ static void qp_tile_cb(lv_event_t *e)
         sound_play(SOUND_TICK);
         break;
     case 3: panel_close(); net_request_setup(); return;
+    case 4:
+        g_set.live = !g_set.live;
+        settings_save();
+        net_sync_now();          /* connect (or disconnect) right away */
+        break;
+    case 5:
+        g_set.timeout = (g_set.timeout + 1) % 3;
+        settings_save();
+        break;
     }
     panel_update();
 }
@@ -904,16 +913,16 @@ static lv_obj_t *qp_tile(lv_obj_t *grid, const char *icon, const char *name, int
 {
     lv_obj_t *t = lv_obj_create(grid);
     lv_obj_remove_style_all(t);
-    lv_obj_set_size(t, 168, 104);
+    lv_obj_set_size(t, 168, 90);
     lv_obj_set_style_radius(t, 24, 0);
     lv_obj_set_style_bg_color(t, lv_color_hex(0x0A1226), 0);
     lv_obj_set_style_bg_color(t, lv_color_hex(0x16223F), LV_STATE_PRESSED);
     lv_obj_set_style_bg_opa(t, LV_OPA_COVER, 0);
-    lv_obj_set_style_pad_all(t, 16, 0);
+    lv_obj_set_style_pad_all(t, 12, 0);
     lv_obj_set_flex_flow(t, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(t, 6, 0);
+    lv_obj_set_style_pad_row(t, 2, 0);
     lv_obj_add_event_cb(t, qp_tile_cb, LV_EVENT_CLICKED, (void *)(intptr_t)which);
-    lv_obj_t *i = make_label(t, &lv_font_montserrat_24, COL_BLUE);
+    lv_obj_t *i = make_label(t, &lv_font_montserrat_20, COL_BLUE);
     lv_label_set_text(i, icon);
     lv_obj_t *n = make_label(t, &lv_font_montserrat_16, COL_WHITE);
     lv_label_set_text(n, name);
@@ -937,7 +946,7 @@ static void panel_update(void)
     case NET_NO_WIFI:  w = "No Wi-Fi saved yet"; break;
     case NET_SETUP:    w = "Wi-Fi setup open"; break;
     default:
-        if (g_net_last_sync[0]) { snprintf(tmp, sizeof(tmp), "Synced at %s", g_net_last_sync); w = tmp; }
+        if (g_net_last_sync[0]) { snprintf(tmp, sizeof(tmp), "Synced at %s%s", g_net_last_sync, g_set.live ? " - live" : ""); w = tmp; }
         else w = "Not synced yet";
         break;
     }
@@ -949,6 +958,8 @@ static void panel_update(void)
     static const char *const VO[3] = {"Off", "Low", "High"};
     label_printf(s_qp_bright, s_qp_bright_buf, sizeof(s_qp_bright_buf), "%s", BR[g_set.bright & 3]);
     label_printf(s_qp_sound, s_qp_sound_buf, sizeof(s_qp_sound_buf), "%s", VO[g_set.volume % 3]);
+    label_printf(s_qp_live, s_qp_live_buf, sizeof(s_qp_live_buf), "%s", g_set.live ? "On" : "Off");
+    label_printf(s_qp_tmo, s_qp_tmo_buf, sizeof(s_qp_tmo_buf), "%lu s", (unsigned long)(settings_timeout_ms() / 1000));
 }
 
 static void panel_open(void)
@@ -980,11 +991,13 @@ static void panel_open(void)
     lv_obj_set_style_pad_column(grid, 14, 0);
     lv_obj_set_style_pad_row(grid, 14, 0);
     lv_obj_remove_flag(grid, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_align(grid, LV_ALIGN_TOP_MID, 0, 104);
-    s_qp_bright_buf[0] = s_qp_sound_buf[0] = 0;
+    lv_obj_align(grid, LV_ALIGN_TOP_MID, 0, 96);
+    s_qp_bright_buf[0] = s_qp_sound_buf[0] = s_qp_live_buf[0] = s_qp_tmo_buf[0] = 0;
     qp_tile(grid, LV_SYMBOL_REFRESH, "Sync now", 0, NULL, NULL);
+    qp_tile(grid, LV_SYMBOL_BELL, "Live alerts", 4, &s_qp_live, s_qp_live_buf);
     qp_tile(grid, LV_SYMBOL_IMAGE, "Brightness", 1, &s_qp_bright, s_qp_bright_buf);
     qp_tile(grid, LV_SYMBOL_VOLUME_MAX, "Sound", 2, &s_qp_sound, s_qp_sound_buf);
+    qp_tile(grid, LV_SYMBOL_EYE_CLOSE, "Screen off", 5, &s_qp_tmo, s_qp_tmo_buf);
     qp_tile(grid, LV_SYMBOL_WIFI, "Wi-Fi setup", 3, NULL, NULL);
 
     /* close */
@@ -996,7 +1009,7 @@ static void panel_open(void)
     lv_obj_set_style_border_color(c, lv_color_hex(COL_TRACK), 0);
     lv_obj_set_style_bg_color(c, lv_color_hex(0x16223F), LV_STATE_PRESSED);
     lv_obj_set_style_bg_opa(c, LV_OPA_COVER, LV_STATE_PRESSED);
-    lv_obj_align(c, LV_ALIGN_BOTTOM_MID, 0, -52);
+    lv_obj_align(c, LV_ALIGN_BOTTOM_MID, 0, -42);
     lv_obj_add_event_cb(c, qp_close_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_t *cl = make_label(c, &lv_font_montserrat_16, COL_GREY);
     lv_label_set_text(cl, LV_SYMBOL_UP "  Close");
@@ -1006,7 +1019,7 @@ static void panel_open(void)
     char vb[32];
     snprintf(vb, sizeof(vb), "Ace Watch v%s", esp_app_get_description()->version);
     lv_label_set_text(v, vb);
-    lv_obj_align(v, LV_ALIGN_BOTTOM_MID, 0, -20);
+    lv_obj_align(v, LV_ALIGN_BOTTOM_MID, 0, -14);
 
     panel_update();
 }

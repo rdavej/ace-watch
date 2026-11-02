@@ -9,6 +9,7 @@
  */
 #include "net.h"
 #include "diag.h"
+#include "settings.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -68,6 +69,8 @@ static EventGroupHandle_t s_ev;
 #define EV_JOB        BIT4
 #define EV_SYNC       BIT5
 #define OFFLINE_RETRY_MS (5 * 60 * 1000)   /* out of Wi-Fi range: try again sooner */
+#define LIVE_POLL_MS     60000              /* Live alerts: check DevX every minute */
+#define LIVE_RETRY_MS    (5 * 60 * 1000)    /* Live alerts, no Wi-Fi: look again in 5 min */
 
 #define DEFAULT_SERVER  "https://app.poweredbydevx.com"
 #define STAY_ON_MS      60000   /* after a switch tap, keep Wi-Fi up this long for the next tap */
@@ -191,10 +194,13 @@ bool net_has_key(void) { return s_key[0] != 0; }
 
 /* ---------------- Wi-Fi ---------------- */
 
+static volatile bool s_link_down;   /* Wi-Fi dropped while we meant to stay connected */
+
 static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         if (s_connecting) xEventGroupSetBits(s_ev, EV_FAIL);
+        else s_link_down = true;
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         xEventGroupSetBits(s_ev, EV_GOT_IP);
     }
@@ -694,7 +700,7 @@ static void run_jobs(void)
         EventBits_t b = xEventGroupWaitBits(s_ev, EV_JOB, pdTRUE, pdFALSE, pdMS_TO_TICKS(STAY_ON_MS));
         if (!(b & EV_JOB)) break;
     }
-    if (s_wifi_up) {
+    if (s_wifi_up && !(g_set.live && net_has_key())) {   /* Live alerts: stay connected */
         wifi_off();
         s_wifi_up = false;
     }
@@ -1021,6 +1027,7 @@ static void net_task(void *arg)
     cfg_load();
     bool first = true;
     int64_t next_sync_us = 0;
+    int64_t next_live_us = 0;
 
     for (;;) {
         if (!s_net_count) {
@@ -1038,7 +1045,16 @@ static void net_task(void *arg)
 
         /* Not time to sync yet: we only woke for a switch tap / notification check */
         if (esp_timer_get_time() < next_sync_us) {
+            bool live = g_set.live && net_has_key();
+            if (!live && s_wifi_up) {           /* Live alerts just turned off */
+                wifi_off();
+                s_wifi_up = false;
+            }
             int64_t wait_ms = (next_sync_us - esp_timer_get_time()) / 1000;
+            if (live) {
+                int64_t to_live = (next_live_us - esp_timer_get_time()) / 1000;
+                if (to_live < wait_ms) wait_ms = to_live < 0 ? 0 : to_live;
+            }
             EventBits_t b = xEventGroupWaitBits(s_ev, EV_SETUP_REQ | EV_JOB | EV_SYNC, pdFALSE, pdFALSE, pdMS_TO_TICKS(wait_ms));
             if (b & EV_SYNC) {                 /* "Sync now" from the quick panel */
                 xEventGroupClearBits(s_ev, EV_SYNC);
@@ -1051,6 +1067,24 @@ static void net_task(void *arg)
                 next_sync_us = 0;   /* sync right away: new network or DevX key */
             }
             else if (b & EV_JOB) { xEventGroupClearBits(s_ev, EV_JOB); run_jobs(); }
+            else if (live && esp_timer_get_time() >= next_live_us) {
+                /* Live alerts: (re)connect if needed, then check for new DevX alerts */
+                if (s_wifi_up && s_link_down) { wifi_off(); s_wifi_up = false; }
+                if (!s_wifi_up) {
+                    diag_phase("Wi-Fi");
+                    s_link_down = false;
+                    s_wifi_up = wifi_connect();
+                }
+                if (s_wifi_up) {
+                    diag_phase("DevX");
+                    job_feed();
+                    g_net_state = NET_OK;
+                    next_live_us = esp_timer_get_time() + (int64_t)LIVE_POLL_MS * 1000;
+                } else {
+                    next_live_us = esp_timer_get_time() + (int64_t)LIVE_RETRY_MS * 1000;
+                }
+                diag_phase("idle");
+            }
             continue;
         }
         next_sync_us = esp_timer_get_time() + (int64_t)SYNC_INTERVAL_MS * 1000;
@@ -1058,7 +1092,14 @@ static void net_task(void *arg)
         g_net_phase = "Wi-Fi";
         diag_phase("Wi-Fi");
         g_net_state = NET_CONNECTING;
-        if (wifi_connect()) {
+        bool up = s_wifi_up && !s_link_down;      /* Live alerts: already connected */
+        if (!up) {
+            if (s_wifi_up) wifi_off();
+            s_link_down = false;
+            up = wifi_connect();
+        }
+        s_wifi_up = false;
+        if (up) {
             g_net_phase = "Time";
             diag_phase("Time");
             g_net_state = NET_SYNCING;
@@ -1071,9 +1112,14 @@ static void net_task(void *arg)
                 diag_phase("DevX");
                 job_feed();
             }
-            g_net_phase = "Wi-Fi off";
-            diag_phase("Wi-Fi off");
-            wifi_off();
+            if (g_set.live && net_has_key()) {
+                s_wifi_up = true;                   /* stay connected for Live alerts */
+                next_live_us = esp_timer_get_time() + (int64_t)LIVE_POLL_MS * 1000;
+            } else {
+                g_net_phase = "Wi-Fi off";
+                diag_phase("Wi-Fi off");
+                wifi_off();
+            }
             g_net_state = NET_OK;
         } else {
             diag_phase("Wi-Fi off");

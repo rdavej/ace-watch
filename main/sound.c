@@ -41,7 +41,8 @@ static void tone(int hz, int ms)
                 s_buf[i] = (int16_t)((int32_t)s_buf[i] * k / CHUNK);
             }
         }
-        esp_codec_dev_write(s_spk, s_buf, sizeof(s_buf));
+        int we = esp_codec_dev_write(s_spk, s_buf, sizeof(s_buf));
+        if (we != ESP_CODEC_DEV_OK && c == 0) ESP_LOGW(TAG, "Speaker write failed (%d)", we);
     }
 }
 
@@ -60,7 +61,12 @@ static void sound_task(void *arg)
             .channel = 1,
             .bits_per_sample = 16,
         };
-        if (esp_codec_dev_open(s_spk, &fs) != ESP_CODEC_DEV_OK) continue;
+        int oe = esp_codec_dev_open(s_spk, &fs);
+        if (oe != ESP_CODEC_DEV_OK) {
+            ESP_LOGW(TAG, "Speaker open failed (%d)", oe);
+            continue;
+        }
+        ESP_LOGI(TAG, "Playing sound %d at volume %d", (int)s, vol);
 
         /* keep playing anything else queued while the speaker is on */
         do {

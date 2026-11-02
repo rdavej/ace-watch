@@ -14,6 +14,8 @@ DevX / Ace firmware for the Waveshare ESP32-C6-Touch-AMOLED-2.06 (410 × 502 AMO
 - **Steps screen:** last 7 days as bars with the 8,000 goal line and the daily average
 - **DevX alerts:** a copy of the pushes DevX/Ace send the Director, checked at every sync (every 30 min) and when you open the screen; new ones pop up as a banner with a ding
 - **Switches:** Smart Life switches through the DevX server (tap a row to switch it), plus OPEN GATE (tap twice) for the gym entrance gate. Wi-Fi connects on the first tap and stays on 1 min for the next one
+- **Pull-down panel (swipe down on the face):** Wi-Fi/sync status, battery, Sync now, Live alerts, brightness, sound, screen-off time, Wi-Fi setup
+- **Live alerts (off by default):** stays on a known Wi-Fi and checks DevX every minute so Ace pop-ups arrive within ~1 min (uses more battery); off = check every 30 min
 - **Settings:** brightness, sound (off / low / high), screen-off time (10 / 20 / 30 s)
 - **DevX key:** alerts and switches need `WATCH_TOKEN` on the server (devx-gym-backend) and the same key typed into the setup page (hold the face 3 s)
 - Goal reached: bar turns yellow + "GOAL REACHED!" + a chirp at 8,000 steps
