@@ -7,7 +7,7 @@ to draw a glow itself). RGB565 + alpha.
 from PIL import Image, ImageDraw, ImageFilter
 import sys
 sys.path.insert(0, "tools")
-from make_ace import to_c   # run from the repo folder: python3 tools/make_face_logo.py
+from make_logo import to_c  # plain RGB565 (run from the repo folder: python3 tools/make_face_logo.py)
 
 SRC = "tools/assets/devx-logo.png"
 OUT = "main/img_devx_round.c"
@@ -32,7 +32,10 @@ def build():
     ImageDraw.Draw(m).ellipse([0, 0, logo.size[0] - 1, logo.size[1] - 1], fill=255)
     logo.putalpha(m)
     out.alpha_composite(logo, (pad, pad))
-    return out.resize((size, size), Image.LANCZOS)
+    out = out.resize((size, size), Image.LANCZOS)
+    flat = Image.new("RGB", out.size, (0, 0, 0))
+    flat.paste(out, (0, 0), out)
+    return flat
 
 if __name__ == "__main__":
     im = build()
