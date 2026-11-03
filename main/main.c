@@ -34,6 +34,7 @@
 #include "sound.h"
 #include "pages.h"
 #include "rest.h"
+#include "wifi_ui.h"
 #include "settings.h"
 #include "stopwatch.h"
 
@@ -569,7 +570,8 @@ static void power_timer_cb(lv_timer_t *t)
     (void)t;
     diag_ui_alive();   /* tell the freeze guard the screen task is running */
     uint32_t now = lv_tick_get();
-    bool keep_on = g_net_state == NET_SETUP || g_net_state == NET_UPDATING;
+    bool keep_on = g_net_state == NET_SETUP || g_net_state == NET_UPDATING || wifi_ui_busy();
+    wifi_ui_tick();
 
     /* Palm: check while the screen is on, and while covered (to see it lift) */
     if (s_screen_on || s_palm_down) {
@@ -970,7 +972,7 @@ static void qp_tile_cb(lv_event_t *e)
         settings_save();
         sound_play(SOUND_TICK);
         break;
-    case 3: panel_close(); net_request_setup(); return;
+    case 3: panel_close(); wifi_ui_open(); return;      /* Wi-Fi picker on the watch */
     case 4:
         g_set.live = !g_set.live;
         settings_save();
@@ -1082,7 +1084,7 @@ static void panel_open(void)
     qp_tile(grid, LV_SYMBOL_IMAGE, "Brightness", 1, &s_qp_bright, s_qp_bright_buf);
     qp_tile(grid, LV_SYMBOL_VOLUME_MAX, "Sound", 2, &s_qp_sound, s_qp_sound_buf);
     qp_tile(grid, LV_SYMBOL_EYE_CLOSE, "Screen off", 5, &s_qp_tmo, s_qp_tmo_buf);
-    qp_tile(grid, LV_SYMBOL_WIFI, "Wi-Fi setup", 3, NULL, NULL);
+    qp_tile(grid, LV_SYMBOL_WIFI, "Wi-Fi", 3, NULL, NULL);
 
     /* close: swipe up anywhere, or tap the bar at the bottom */
     lv_obj_t *c = lv_obj_create(s_qpanel);

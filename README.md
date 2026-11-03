@@ -16,7 +16,8 @@ DevX / Ace firmware for the Waveshare ESP32-C6-Touch-AMOLED-2.06 (410 × 502 AMO
 - **Steps screen:** last 7 days as bars with the 8,000 goal line and the daily average
 - **DevX alerts:** a copy of the pushes DevX/Ace send the Director, checked at every sync (every 30 min) and when you open the screen; new ones pop up as a banner with a ding
 - **Switches:** Smart Life switches through the DevX server (tap a row to switch it), plus OPEN GATE (tap twice) for the gym entrance gate. Wi-Fi connects on the first tap and stays on 1 min for the next one
-- **Pull-down panel (swipe down on the face):** Wi-Fi/sync status, battery, Sync now, Live alerts, Raise wake, brightness, sound, screen-off time, Wi-Fi setup. Swipe up to close
+- **Pull-down panel (swipe down on the face):** Wi-Fi/sync status, battery, Sync now, Live alerts, Raise wake, brightness, sound, screen-off time, Wi-Fi. Swipe up to close
+- **Wi-Fi on the watch:** panel → Wi-Fi: nearby networks (strongest first, Saved / On marked) → tap one → type the password on the watch keyboard → Join. Saved and open networks join with one tap. "Setup page (DevX key)" at the bottom opens the phone setup page (still needed once for the DevX key)
 - **Steps to DevX:** at every sync the watch sends today + the last 6 days to DevX; they show as "Steps today" on your member app Home (devx-gym-backend PR #254)
 - **Live alerts (off by default):** stays on a known Wi-Fi and checks DevX every minute so Ace pop-ups arrive within ~1 min (uses more battery); off = check every 30 min
 - **Settings:** brightness, sound (off / low / high), screen-off time (10 / 20 / 30 s)

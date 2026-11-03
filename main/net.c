@@ -97,7 +97,7 @@ volatile req_state_t g_feed_state = REQ_IDLE;
 static SemaphoreHandle_t s_lock;
 static int64_t s_feed_seen = 0;      /* newest notification already alerted (server ms, saved) */
 
-typedef enum { JOB_SW_LIST, JOB_SW_SET, JOB_GATE, JOB_FEED } job_kind_t;
+typedef enum { JOB_SW_LIST, JOB_SW_SET, JOB_GATE, JOB_FEED, JOB_WIFI_SCAN, JOB_WIFI_JOIN } job_kind_t;
 typedef struct { job_kind_t kind; char id[24]; bool on; } net_job_t;
 static QueueHandle_t s_jobs;
 static bool s_wifi_up = false;
@@ -197,10 +197,13 @@ bool net_has_key(void) { return s_key[0] != 0; }
 /* ---------------- Wi-Fi ---------------- */
 
 static volatile bool s_link_down;   /* Wi-Fi dropped while we meant to stay connected */
+static volatile uint8_t s_disc_reason;
+char g_wifi_ssid[33] = "";          /* the network we're on (or were last on) */
 
 static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
+        s_disc_reason = data ? ((wifi_event_sta_disconnected_t *)data)->reason : 0;
         if (s_connecting) xEventGroupSetBits(s_ev, EV_FAIL);
         else s_link_down = true;
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
@@ -292,7 +295,7 @@ static bool wifi_connect(void)
         esp_wifi_connect();
         EventBits_t b = xEventGroupWaitBits(s_ev, EV_GOT_IP | EV_FAIL, pdFALSE, pdFALSE, pdMS_TO_TICKS(15000));
         s_connecting = false;
-        if (b & EV_GOT_IP) return true;
+        if (b & EV_GOT_IP) { strlcpy(g_wifi_ssid, w->ssid, sizeof(g_wifi_ssid)); return true; }
         ESP_LOGW(TAG, "Could not connect to '%s'", w->ssid);
         esp_wifi_disconnect();
     }
@@ -709,6 +712,110 @@ void net_feed_refresh(void) { if (net_has_key()) { g_feed_state = REQ_BUSY; queu
 bool net_lock(int wait_ms) { return s_lock && xSemaphoreTake(s_lock, pdMS_TO_TICKS(wait_ms)) == pdTRUE; }
 void net_unlock(void) { xSemaphoreGive(s_lock); }
 
+/* ---------------- Wi-Fi picker on the watch (scan, then join with a typed password) ---------------- */
+scan_ap_t g_scan_ap[SCAN_AP_MAX];
+volatile int g_scan_ap_n;
+volatile req_state_t g_scan_state = REQ_IDLE;
+volatile req_state_t g_join_state = REQ_IDLE;
+char g_join_msg[48];
+static char s_join_ssid[33], s_join_pass[65];
+static bool s_join_saved;           /* join a saved network with its saved password */
+
+static void job_wifi_scan(void)
+{
+    if (!s_wifi_up) {
+        esp_wifi_set_mode(WIFI_MODE_STA);
+        if (esp_wifi_start() != ESP_OK) { g_scan_state = REQ_ERR; return; }
+    }
+    uint16_t n = 20;
+    wifi_ap_record_t *recs = calloc(n, sizeof(wifi_ap_record_t));
+    if (!recs) { g_scan_state = REQ_ERR; if (!s_wifi_up) esp_wifi_stop(); return; }
+    wifi_scan_config_t sc = {0};
+    if (esp_wifi_scan_start(&sc, true) != ESP_OK) n = 0;
+    else esp_wifi_scan_get_ap_records(&n, recs);
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    int k = 0;
+    for (int j = 0; j < n && k < SCAN_AP_MAX; j++) {       /* records come strongest first */
+        const char *name = (const char *)recs[j].ssid;
+        if (!name[0]) continue;
+        bool dup = false;
+        for (int i = 0; i < k; i++) if (strcmp(g_scan_ap[i].ssid, name) == 0) { dup = true; break; }
+        if (dup) continue;
+        scan_ap_t *a = &g_scan_ap[k++];
+        strlcpy(a->ssid, name, sizeof(a->ssid));
+        a->rssi = recs[j].rssi;
+        a->lock = recs[j].authmode != WIFI_AUTH_OPEN;
+        a->saved = 0;
+        for (int i = 0; i < MAX_NETS; i++) if (s_nets[i].ssid[0] && strcmp(s_nets[i].ssid, name) == 0) a->saved = 1;
+        a->current = s_wifi_up && strcmp(g_wifi_ssid, name) == 0;
+    }
+    g_scan_ap_n = k;
+    xSemaphoreGive(s_lock);
+    free(recs);
+    if (!s_wifi_up) esp_wifi_stop();
+    g_scan_state = REQ_OK;
+}
+
+/* Returns true when connected (and the network is saved) */
+static bool job_wifi_join(void)
+{
+    char pass[65];
+    strlcpy(pass, s_join_pass, sizeof(pass));
+    if (s_join_saved) {
+        for (int i = 0; i < MAX_NETS; i++) if (strcmp(s_nets[i].ssid, s_join_ssid) == 0) strlcpy(pass, s_nets[i].pass, sizeof(pass));
+    }
+    if (s_wifi_up) { wifi_off(); s_wifi_up = false; }
+    esp_wifi_set_mode(WIFI_MODE_STA);
+    if (esp_wifi_start() != ESP_OK) { strlcpy(g_join_msg, "Wi-Fi didn't start", sizeof(g_join_msg)); g_join_state = REQ_ERR; return false; }
+    esp_wifi_set_max_tx_power(60);
+    wifi_config_t wc = {0};
+    strlcpy((char *)wc.sta.ssid, s_join_ssid, sizeof(wc.sta.ssid));
+    strlcpy((char *)wc.sta.password, pass, sizeof(wc.sta.password));
+    wc.sta.threshold.authmode = WIFI_AUTH_OPEN;
+    esp_wifi_set_config(WIFI_IF_STA, &wc);
+    ESP_LOGI(TAG, "Joining '%s' (typed on the watch)", s_join_ssid);
+    xEventGroupClearBits(s_ev, EV_GOT_IP | EV_FAIL);
+    s_disc_reason = 0;
+    s_connecting = true;
+    esp_wifi_connect();
+    EventBits_t b = xEventGroupWaitBits(s_ev, EV_GOT_IP | EV_FAIL, pdFALSE, pdFALSE, pdMS_TO_TICKS(15000));
+    s_connecting = false;
+    if (b & EV_GOT_IP) {
+        nets_add(s_join_ssid, pass);
+        strlcpy(g_wifi_ssid, s_join_ssid, sizeof(g_wifi_ssid));
+        s_wifi_up = true;
+        s_link_down = false;
+        g_net_state = NET_OK;
+        g_join_state = REQ_OK;
+        return true;
+    }
+    uint8_t r = s_disc_reason;
+    bool bad_pw = r == WIFI_REASON_AUTH_FAIL || r == WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT ||
+                  r == WIFI_REASON_HANDSHAKE_TIMEOUT || r == WIFI_REASON_MIC_FAILURE;
+    strlcpy(g_join_msg, bad_pw ? "Wrong password" : !(b & EV_FAIL) ? "No answer from the network" : "Couldn't connect",
+            sizeof(g_join_msg));
+    esp_wifi_disconnect();
+    esp_wifi_stop();
+    g_join_state = REQ_ERR;
+    return false;
+}
+
+void net_wifi_scan(void)
+{
+    g_scan_state = REQ_BUSY;
+    if (!queue_job(JOB_WIFI_SCAN, NULL, false)) g_scan_state = REQ_ERR;
+}
+
+void net_wifi_join(const char *ssid, const char *pass, bool saved)
+{
+    strlcpy(s_join_ssid, ssid, sizeof(s_join_ssid));
+    strlcpy(s_join_pass, pass ? pass : "", sizeof(s_join_pass));
+    s_join_saved = saved;
+    g_join_msg[0] = 0;
+    g_join_state = REQ_BUSY;
+    if (!queue_job(JOB_WIFI_JOIN, NULL, false)) { strlcpy(g_join_msg, "Busy - try again", sizeof(g_join_msg)); g_join_state = REQ_ERR; }
+}
+
 /* Run queued jobs; keeps Wi-Fi on for a minute after the last one so the next tap is quick */
 static void run_jobs(void)
 {
@@ -717,6 +824,16 @@ static void run_jobs(void)
         bool any = false;
         while (xQueueReceive(s_jobs, &j, 0) == pdTRUE) {
             any = true;
+            if (j.kind == JOB_WIFI_SCAN) { diag_phase("Wi-Fi scan"); job_wifi_scan(); continue; }
+            if (j.kind == JOB_WIFI_JOIN) {
+                diag_phase("Wi-Fi join");
+                if (job_wifi_join()) {        /* connected: sync now on this connection */
+                    xEventGroupSetBits(s_ev, EV_SYNC);
+                    diag_phase("idle");
+                    return;
+                }
+                continue;
+            }
             if (!s_wifi_up) {
                 g_net_phase = "Wi-Fi";
                 g_net_state = NET_CONNECTING;
@@ -1080,8 +1197,10 @@ static void net_task(void *arg)
                 first = false;
                 run_setup(); /* first boot: open setup automatically */
             } else {
-                xEventGroupWaitBits(s_ev, EV_SETUP_REQ, pdTRUE, pdFALSE, portMAX_DELAY);
-                run_setup();
+                /* no Wi-Fi saved: wait for the setup page or the Wi-Fi picker on the watch */
+                EventBits_t b = xEventGroupWaitBits(s_ev, EV_SETUP_REQ | EV_JOB, pdFALSE, pdFALSE, portMAX_DELAY);
+                if (b & EV_SETUP_REQ) { xEventGroupClearBits(s_ev, EV_SETUP_REQ); run_setup(); }
+                else { xEventGroupClearBits(s_ev, EV_JOB); run_jobs(); }
             }
             continue;
         }
