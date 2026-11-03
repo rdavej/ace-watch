@@ -62,7 +62,7 @@ def build():
     glow = glow.filter(ImageFilter.GaussianBlur(s(9)))
     im = Image.alpha_composite(im, glow)
     # ring track
-    rr = RING_R
+    rr = RING_R + RING_W / 2       # outline grows inward: outer edge here = the watch's 228 px arc
     ImageDraw.Draw(im).ellipse([s(CX - rr), s(CY - rr), s(CX + rr), s(CY + rr)], outline=(0x13, 0x20, 0x3D, 255), width=s(RING_W))
     # the real DevX logo, cropped round
     logo = Image.open("tools/assets/devx-logo.png").convert("RGBA").resize((s(LOGO), s(LOGO)), Image.LANCZOS)

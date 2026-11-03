@@ -44,7 +44,7 @@ LV_IMAGE_DECLARE(img_devx_logo_big);
 LV_IMAGE_DECLARE(img_devx_logo_small);
 LV_IMAGE_DECLARE(img_ace_small);
 LV_IMAGE_DECLARE(img_people);
-LV_IMAGE_DECLARE(img_devx_round);
+LV_IMAGE_DECLARE(img_wallpaper);
 
 static const char *TAG = "ace_watch";
 
@@ -1191,6 +1191,13 @@ static void build_ui(void)
     lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
 
     /* ---- Logo Core face (v0.7): the DevX logo in the middle, steps ring around it ---- */
+    /* Wallpaper (v0.7.4): plates + circuit lines like the DevX website, with the logo, its glow
+       and the ring track drawn in. One plain picture from flash: no extra RAM. */
+    lv_obj_t *wall = lv_image_create(scr);
+    lv_image_set_src(wall, &img_wallpaper);
+    lv_obj_remove_flag(wall, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_pos(wall, 0, 0);
+
     /* Date + time on top */
     s_date = make_label(scr, &lv_font_montserrat_16, COL_BLUE);
     lv_obj_set_style_text_letter_space(s_date, 3, 0);
@@ -1201,11 +1208,7 @@ static void build_ui(void)
     label_printf(s_time, s_time_buf, sizeof(s_time_buf), "%s", "--:--");
     lv_obj_align(s_time, LV_ALIGN_TOP_MID, 0, 30);
 
-    /* The DevX logo (round, with its glow drawn in) and the steps ring around it */
-    lv_obj_t *logo = lv_image_create(scr);
-    lv_image_set_src(logo, &img_devx_round);
-    lv_obj_remove_flag(logo, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_align(logo, LV_ALIGN_TOP_MID, 0, 277 - 107);
+    /* Steps ring around the logo: only the yellow progress is drawn here (the track is in the wallpaper) */
 
     s_ring = lv_arc_create(scr);
     lv_obj_set_size(s_ring, 228, 228);
@@ -1218,7 +1221,7 @@ static void build_ui(void)
     lv_obj_set_style_pad_all(s_ring, 0, 0);
     lv_obj_set_style_arc_width(s_ring, 12, LV_PART_MAIN);
     lv_obj_set_style_arc_width(s_ring, 12, LV_PART_INDICATOR);
-    lv_obj_set_style_arc_color(s_ring, lv_color_hex(COL_TRACK), LV_PART_MAIN);
+    lv_obj_set_style_arc_opa(s_ring, LV_OPA_TRANSP, LV_PART_MAIN);
     lv_obj_set_style_arc_color(s_ring, lv_color_hex(COL_YELLOW), LV_PART_INDICATOR);
     lv_obj_set_style_arc_rounded(s_ring, true, LV_PART_INDICATOR);
     lv_obj_align(s_ring, LV_ALIGN_TOP_MID, 0, 277 - 114);
