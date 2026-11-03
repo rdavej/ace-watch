@@ -44,6 +44,7 @@ LV_IMAGE_DECLARE(img_devx_logo_big);
 LV_IMAGE_DECLARE(img_devx_logo_small);
 LV_IMAGE_DECLARE(img_ace_small);
 LV_IMAGE_DECLARE(img_people);
+LV_IMAGE_DECLARE(img_devx_round);
 
 static const char *TAG = "ace_watch";
 
@@ -361,7 +362,7 @@ static void update_steps(void)
     bool first = !s_steps_ready;
     s_steps_ready = true;
     bool reached = n >= STEP_GOAL;
-    lv_obj_set_style_arc_color(s_ring, lv_color_hex(reached ? COL_YELLOW : COL_BLUE), LV_PART_INDICATOR);
+    lv_obj_set_style_arc_color(s_ring, lv_color_hex(reached ? COL_BLUE : COL_YELLOW), LV_PART_INDICATOR);   /* goal: ring turns blue */
     if (reached && !s_goal_done) {
         s_goal_done = true;
         if (!first && n < STEP_GOAL + 50) { /* just crossed it, not a reboot */
@@ -1189,10 +1190,25 @@ static void build_ui(void)
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
     lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* ---- Pulse Ring face ---- */
-    /* Steps ring around the face (fills up toward the 8,000 goal) */
+    /* ---- Logo Core face (v0.7): the DevX logo in the middle, steps ring around it ---- */
+    /* Date + time on top */
+    s_date = make_label(scr, &lv_font_montserrat_16, COL_BLUE);
+    lv_obj_set_style_text_letter_space(s_date, 3, 0);
+    label_printf(s_date, s_date_buf, sizeof(s_date_buf), "%s", "");
+    lv_obj_align(s_date, LV_ALIGN_TOP_MID, 0, 18);
+
+    s_time = make_label(scr, &font_time_86, COL_WHITE);   /* 86 px, drawn directly: no extra RAM */
+    label_printf(s_time, s_time_buf, sizeof(s_time_buf), "%s", "--:--");
+    lv_obj_align(s_time, LV_ALIGN_TOP_MID, 0, 30);
+
+    /* The DevX logo (round, with its glow drawn in) and the steps ring around it */
+    lv_obj_t *logo = lv_image_create(scr);
+    lv_image_set_src(logo, &img_devx_round);
+    lv_obj_remove_flag(logo, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_align(logo, LV_ALIGN_TOP_MID, 0, 277 - 107);
+
     s_ring = lv_arc_create(scr);
-    lv_obj_set_size(s_ring, 370, 370);
+    lv_obj_set_size(s_ring, 228, 228);
     lv_arc_set_rotation(s_ring, 270);
     lv_arc_set_bg_angles(s_ring, 0, 360);
     lv_arc_set_range(s_ring, 0, STEP_GOAL);
@@ -1200,71 +1216,41 @@ static void build_ui(void)
     lv_obj_remove_style(s_ring, NULL, LV_PART_KNOB);
     lv_obj_remove_flag(s_ring, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_style_pad_all(s_ring, 0, 0);
-    lv_obj_set_style_arc_width(s_ring, 16, LV_PART_MAIN);
-    lv_obj_set_style_arc_width(s_ring, 16, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_width(s_ring, 12, LV_PART_MAIN);
+    lv_obj_set_style_arc_width(s_ring, 12, LV_PART_INDICATOR);
     lv_obj_set_style_arc_color(s_ring, lv_color_hex(COL_TRACK), LV_PART_MAIN);
-    lv_obj_set_style_arc_color(s_ring, lv_color_hex(COL_BLUE), LV_PART_INDICATOR);
+    lv_obj_set_style_arc_color(s_ring, lv_color_hex(COL_YELLOW), LV_PART_INDICATOR);
     lv_obj_set_style_arc_rounded(s_ring, true, LV_PART_INDICATOR);
-    lv_obj_align(s_ring, LV_ALIGN_CENTER, 0, -10);
+    lv_obj_align(s_ring, LV_ALIGN_TOP_MID, 0, 277 - 114);
 
-    /* Header: DevX logo + DEVX */
-    lv_obj_t *hdr = lv_obj_create(scr);
-    lv_obj_remove_style_all(hdr);
-    lv_obj_set_size(hdr, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-    lv_obj_set_flex_flow(hdr, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(hdr, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_column(hdr, 8, 0);
-    lv_obj_remove_flag(hdr, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_align(hdr, LV_ALIGN_TOP_MID, 0, 16);
-    lv_obj_t *logo = lv_image_create(hdr);
-    lv_image_set_src(logo, &img_devx_logo_small);
-    lv_obj_t *brand = make_label(hdr, &lv_font_montserrat_16, COL_BLUE);
-    lv_label_set_text(brand, "DEVX");
-    lv_obj_set_style_text_letter_space(brand, 4, 0);
-
-    /* Date, time, steps inside the ring */
-    s_date = make_label(scr, &lv_font_montserrat_16, COL_BLUE);
-    lv_obj_set_style_text_letter_space(s_date, 3, 0);
-    label_printf(s_date, s_date_buf, sizeof(s_date_buf), "%s", "");
-    lv_obj_align(s_date, LV_ALIGN_CENTER, 0, -100);
-
-    s_time = make_label(scr, &font_time_86, COL_WHITE);   /* 86 px, drawn directly: no extra RAM */
-    label_printf(s_time, s_time_buf, sizeof(s_time_buf), "%s", "--:--");
-    lv_obj_align(s_time, LV_ALIGN_CENTER, 0, -38);
-
-    lv_obj_t *row = lv_obj_create(scr);
-    lv_obj_remove_style_all(row);
-    lv_obj_set_size(row, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
-    lv_obj_set_style_pad_column(row, 6, 0);
-    lv_obj_remove_flag(row, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_align(row, LV_ALIGN_CENTER, 0, 40);
-    s_steps = make_label(row, &lv_font_montserrat_24, COL_YELLOW);
-    label_printf(s_steps, s_steps_buf, sizeof(s_steps_buf), "%s", "0");
-    lv_obj_t *goal = make_label(row, &lv_font_montserrat_16, COL_GREY);
-    lv_label_set_text(goal, "/ 8,000");
-    lv_obj_set_style_pad_bottom(goal, 2, 0);
-
-    lv_obj_t *sl = make_label(scr, &lv_font_montserrat_16, COL_GREY);
-    lv_obj_set_style_text_letter_space(sl, 3, 0);
-    lv_label_set_text(sl, "STEPS");
-    lv_obj_align(sl, LV_ALIGN_CENTER, 0, 70);
-
-    /* Bottom row: battery, sets this workout, unread alerts */
+    /* Pills under the ring: steps, in gym now, gate */
     lv_obj_t *bot = lv_obj_create(scr);
     lv_obj_remove_style_all(bot);
     lv_obj_set_size(bot, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(bot, LV_FLEX_FLOW_ROW);
-    lv_obj_set_style_pad_column(bot, 14, 0);
+    lv_obj_set_style_pad_column(bot, 10, 0);
     lv_obj_set_flex_align(bot, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_remove_flag(bot, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_align(bot, LV_ALIGN_BOTTOM_MID, 0, -26);
-    s_bat_label = make_label(bot, &lv_font_montserrat_16, COL_GREY);
-    label_printf(s_bat_label, s_bat_buf, sizeof(s_bat_buf), "%s", "");
-    s_sets_lbl = make_label(bot, &lv_font_montserrat_16, COL_BLUE);
-    label_printf(s_sets_lbl, s_sets_buf, sizeof(s_sets_buf), "%s", "");
-    lv_obj_add_flag(s_sets_lbl, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_align(bot, LV_ALIGN_TOP_MID, 0, 408);
+
+    lv_obj_t *sp = lv_obj_create(bot);
+    lv_obj_remove_style_all(sp);
+    lv_obj_set_size(sp, LV_SIZE_CONTENT, 36);
+    lv_obj_set_style_pad_hor(sp, 14, 0);
+    lv_obj_set_style_pad_column(sp, 6, 0);
+    lv_obj_set_style_radius(sp, 18, 0);
+    lv_obj_set_style_bg_color(sp, lv_color_hex(0x0A1226), 0);
+    lv_obj_set_style_bg_opa(sp, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(sp, 1, 0);
+    lv_obj_set_style_border_color(sp, lv_color_hex(0x13203D), 0);
+    lv_obj_set_flex_flow(sp, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(sp, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_remove_flag(sp, LV_OBJ_FLAG_CLICKABLE);
+    s_steps = make_label(sp, &lv_font_montserrat_16, COL_YELLOW);
+    label_printf(s_steps, s_steps_buf, sizeof(s_steps_buf), "%s", "0");
+    lv_obj_t *sl = make_label(sp, &lv_font_montserrat_14, COL_GREY);
+    lv_obj_set_style_text_letter_space(sl, 1, 0);
+    lv_label_set_text(sl, "STEPS");
 
     /* In gym now: people icon + count */
     s_gym_pill = lv_obj_create(bot);
@@ -1287,11 +1273,11 @@ static void build_ui(void)
     lv_label_set_text_static(s_gym_lbl, s_gym_buf);
     lv_obj_add_flag(s_gym_pill, LV_OBJ_FLAG_HIDDEN);
 
-    /* Gate pill, at the end of the bottom row (only when the watch key is set) */
+    /* Gate pill (only when the watch key is set) */
     s_gate_pill = lv_obj_create(bot);
     lv_obj_remove_style_all(s_gate_pill);
     lv_obj_set_size(s_gate_pill, LV_SIZE_CONTENT, 36);
-    lv_obj_set_style_pad_hor(s_gate_pill, 16, 0);
+    lv_obj_set_style_pad_hor(s_gate_pill, 14, 0);
     lv_obj_set_style_radius(s_gate_pill, 18, 0);
     lv_obj_set_style_bg_opa(s_gate_pill, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(s_gate_pill, 1, 0);
@@ -1299,14 +1285,27 @@ static void build_ui(void)
     lv_obj_set_ext_click_area(s_gate_pill, 12);
     lv_obj_add_event_cb(s_gate_pill, gate_pill_cb, LV_EVENT_CLICKED, NULL);
     s_gate_lbl = make_label(s_gate_pill, &lv_font_montserrat_16, COL_BLUE);
-    lv_obj_set_style_max_width(s_gate_lbl, 170, 0);
+    lv_obj_set_style_max_width(s_gate_lbl, 140, 0);
     lv_label_set_long_mode(s_gate_lbl, LV_LABEL_LONG_DOT);
     lv_obj_center(s_gate_lbl);
     lv_obj_add_flag(s_gate_pill, LV_OBJ_FLAG_HIDDEN);
     gate_pill_idle();
 
-    /* Alerts waiting: small bar + count at the very bottom */
-    s_alert_bar = lv_obj_create(scr);
+    /* Very bottom: battery, sets / stopwatch, alerts waiting (bar + count) */
+    lv_obj_t *foot = lv_obj_create(scr);
+    lv_obj_remove_style_all(foot);
+    lv_obj_set_size(foot, LV_SIZE_CONTENT, 18);
+    lv_obj_set_flex_flow(foot, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(foot, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(foot, 10, 0);
+    lv_obj_remove_flag(foot, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_align(foot, LV_ALIGN_BOTTOM_MID, 0, -10);
+    s_bat_label = make_label(foot, &lv_font_montserrat_14, COL_GREY);
+    label_printf(s_bat_label, s_bat_buf, sizeof(s_bat_buf), "%s", "");
+    s_sets_lbl = make_label(foot, &lv_font_montserrat_14, COL_BLUE);
+    label_printf(s_sets_lbl, s_sets_buf, sizeof(s_sets_buf), "%s", "");
+    lv_obj_add_flag(s_sets_lbl, LV_OBJ_FLAG_HIDDEN);
+    s_alert_bar = lv_obj_create(foot);
     lv_obj_remove_style_all(s_alert_bar);
     lv_obj_set_size(s_alert_bar, LV_SIZE_CONTENT, 16);
     lv_obj_set_flex_flow(s_alert_bar, LV_FLEX_FLOW_ROW);
@@ -1315,13 +1314,12 @@ static void build_ui(void)
     lv_obj_remove_flag(s_alert_bar, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_t *hb = lv_obj_create(s_alert_bar);
     lv_obj_remove_style_all(hb);
-    lv_obj_set_size(hb, 44, 4);
+    lv_obj_set_size(hb, 36, 4);
     lv_obj_set_style_radius(hb, 2, 0);
     lv_obj_set_style_bg_color(hb, lv_color_hex(COL_BLUE), 0);
     lv_obj_set_style_bg_opa(hb, LV_OPA_COVER, 0);
     s_alerts_lbl = make_label(s_alert_bar, &lv_font_montserrat_14, COL_YELLOW);
     label_printf(s_alerts_lbl, s_alerts_buf, sizeof(s_alerts_buf), "%s", "");
-    lv_obj_align(s_alert_bar, LV_ALIGN_BOTTOM_MID, 0, -6);
     lv_obj_add_flag(s_alert_bar, LV_OBJ_FLAG_HIDDEN);
 
     /* Workout screen (swipe left) */
@@ -1394,12 +1392,12 @@ static void build_ui(void)
     lv_obj_add_flag(s_charge_panel, LV_OBJ_FLAG_HIDDEN);
 
     /* Footer */
-    s_foot = make_label(scr, &lv_font_montserrat_16, COL_GREY);   /* only when there's news */
+    s_foot = make_label(scr, &lv_font_montserrat_14, COL_GREY);   /* only when there's news */
     label_printf(s_foot, s_foot_buf, sizeof(s_foot_buf), "%s", "");
-    lv_obj_set_width(s_foot, 250);
-    lv_label_set_long_mode(s_foot, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(s_foot, 370);
+    lv_label_set_long_mode(s_foot, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_align(s_foot, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(s_foot, LV_ALIGN_CENTER, 0, 112);
+    lv_obj_align(s_foot, LV_ALIGN_TOP_MID, 0, 140);   /* between the time and the ring */
     lv_obj_move_to_index(s_foot, 0);   /* behind the workout screen */
 
     /* Hold the screen 3 s to open Wi-Fi setup */
