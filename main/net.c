@@ -854,6 +854,7 @@ static void run_jobs(void)
             case JOB_SW_SET:  job_sw_set(j.id, j.on); break;
             case JOB_GATE:    job_gate(); break;
             case JOB_FEED:    job_feed(); break;
+            default: break;             /* Wi-Fi picker jobs run above */
             }
         }
         if (!any && !s_wifi_up) break;
