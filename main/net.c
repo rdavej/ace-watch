@@ -614,11 +614,52 @@ static void job_gate(void)
 
 volatile int g_in_gym = -1;
 
+/* An alert made by the watch itself (not from DevX): shown like the others, pops up */
+static void local_alert(const char *title, const char *body)
+{
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    memmove(&g_feed[1], &g_feed[0], sizeof(feed_t) * (FEED_MAX - 1));
+    g_feed[0].at = (int64_t)time(NULL) * 1000;
+    strlcpy(g_feed[0].title, title, sizeof(g_feed[0].title));
+    strlcpy(g_feed[0].body, body, sizeof(g_feed[0].body));
+    if (g_feed_n < FEED_MAX) g_feed_n++;
+    g_feed_rev++;
+    g_feed_new++;
+    xSemaphoreGive(s_lock);
+}
+
+/* "Can't reach DevX": on Wi-Fi, but the server hasn't answered for 10 min (two failed checks
+   at least 10 min apart: ~10 min with Live alerts, ~30 min without). Once, then "back". */
+#define DEVX_DOWN_MS (10 * 60 * 1000)
+static int64_t s_devx_fail_since;   /* 0 = last check worked */
+static bool s_devx_down_told;
+
+static void devx_health(bool ok, int status)
+{
+    int64_t now = esp_timer_get_time() / 1000;
+    if (ok) {
+        if (s_devx_down_told) local_alert("DevX is back", "The DevX server is answering again.");
+        s_devx_fail_since = 0;
+        s_devx_down_told = false;
+        return;
+    }
+    if (status > 0 && status < 500) return;      /* the server answered (e.g. wrong key): it's up */
+    if (!s_devx_fail_since) { s_devx_fail_since = now ? now : 1; return; }
+    if (!s_devx_down_told && now - s_devx_fail_since >= DEVX_DOWN_MS) {
+        s_devx_down_told = true;
+        char b[100];
+        snprintf(b, sizeof(b), "No reply for %d min. Wi-Fi is on: the server or the internet is down.",
+                 (int)((now - s_devx_fail_since) / 60000));
+        local_alert("Can't reach DevX", b);
+    }
+}
+
 static void job_feed(void)
 {
     g_feed_state = REQ_BUSY;
     int st = devx_req("GET", "/api/watch/feed?since=0&n=8", NULL);
     if (st != 200 || strncmp(s_resp, "ok|", 3) != 0) {
+        devx_health(false, st);
         g_feed_state = REQ_ERR;
         return;
     }
@@ -649,6 +690,7 @@ static void job_feed(void)
     /* first ever fetch: don't buzz for old ones */
     if (s_feed_seen && fresh) g_feed_new += fresh;
     xSemaphoreGive(s_lock);
+    devx_health(true, st);
     if (newest != s_feed_seen) {
         s_feed_seen = newest;
         nvs_handle_t h;
