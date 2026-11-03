@@ -1459,7 +1459,9 @@ void app_main(void)
     /* Logo on a normal start; skip it after a crash/freeze so the watch is back fast */
     if (!g_diag_boot_msg[0] && !from_rest) build_splash();
     s_boot_msg_until = lv_tick_get() + 60000;   /* 1 min, so it can be seen */
-    lv_refr_now(NULL);   /* draw the full first frame before Wi-Fi starts */
+    /* No lv_refr_now() here: drawing the first frame in this small start-up task ran out of
+       stack with the Logo Core face (v0.7.0 "Crash: main ... c27 @UI"). The screen task,
+       which has more room, draws it within a few ms instead (Wi-Fi waits 1.5 s anyway). */
     bsp_display_unlock();
 
     bsp_display_brightness_set(settings_brightness());
