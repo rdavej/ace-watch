@@ -44,7 +44,6 @@ static const char *TAG = "net";
 #define MAX_NETS          5
 #define MAX_SCAN          15
 #define SETUP_SSID        "Ace-Watch-Setup"
-#define SYNC_INTERVAL_MS  (30 * 60 * 1000)
 #define SETUP_TIMEOUT_MS  (5 * 60 * 1000)
 #define FW_BASE_URL       "https://github.com/rdavej/ace-watch/releases/latest/download/"
 
@@ -656,6 +655,14 @@ static void devx_health(bool ok, int status)
     }
 }
 
+/* Live alerts right now? On = always; "On my hotspot" = only while connected to that network */
+static bool live_on(bool connected)
+{
+    if (!net_has_key() || !g_set.live) return false;
+    if (g_set.live == 1) return true;
+    return connected && strcmp(g_wifi_ssid, g_set.live_ssid) == 0;
+}
+
 static void job_feed(void)
 {
     g_feed_state = REQ_BUSY;
@@ -907,7 +914,7 @@ static void run_jobs(void)
         EventBits_t b = xEventGroupWaitBits(s_ev, EV_JOB, pdTRUE, pdFALSE, pdMS_TO_TICKS(STAY_ON_MS));
         if (!(b & EV_JOB)) break;
     }
-    if (s_wifi_up && !(g_set.live && net_has_key())) {   /* Live alerts: stay connected */
+    if (s_wifi_up && !live_on(true)) {   /* Live alerts: stay connected */
         wifi_off();
         s_wifi_up = false;
     }
@@ -1254,7 +1261,7 @@ static void net_task(void *arg)
 
         /* Not time to sync yet: we only woke for a switch tap / notification check */
         if (esp_timer_get_time() < next_sync_us) {
-            bool live = g_set.live && net_has_key();
+            bool live = live_on(s_wifi_up && !s_link_down) || (g_set.live == 1 && net_has_key());
             if (!live && s_wifi_up) {           /* Live alerts just turned off */
                 wifi_off();
                 s_wifi_up = false;
@@ -1289,6 +1296,7 @@ static void net_task(void *arg)
                     job_feed();
                     g_net_state = NET_OK;
                     next_live_us = esp_timer_get_time() + (int64_t)LIVE_POLL_MS * 1000;
+                    if (!live_on(true)) { wifi_off(); s_wifi_up = false; }   /* hotspot gone: normal syncs */
                 } else {
                     next_live_us = esp_timer_get_time() + (int64_t)LIVE_RETRY_MS * 1000;
                 }
@@ -1296,7 +1304,7 @@ static void net_task(void *arg)
             }
             continue;
         }
-        next_sync_us = esp_timer_get_time() + (int64_t)SYNC_INTERVAL_MS * 1000;
+        next_sync_us = esp_timer_get_time() + (int64_t)settings_sync_ms() * 1000;
 
         g_net_phase = "Wi-Fi";
         diag_phase("Wi-Fi");
@@ -1322,7 +1330,7 @@ static void net_task(void *arg)
                 job_feed();
                 job_steps();
             }
-            if (g_set.live && net_has_key()) {
+            if (live_on(true)) {
                 s_wifi_up = true;                   /* stay connected for Live alerts */
                 next_live_us = esp_timer_get_time() + (int64_t)LIVE_POLL_MS * 1000;
             } else {

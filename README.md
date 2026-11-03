@@ -21,7 +21,8 @@ DevX / Ace firmware for the Waveshare ESP32-C6-Touch-AMOLED-2.06 (410 × 502 AMO
 - **Pull-down panel (swipe down on the face):** Wi-Fi/sync status, battery, Sync now, Live alerts, Raise wake, brightness, sound, screen-off time, Wi-Fi. Swipe up to close
 - **Wi-Fi on the watch:** panel → Wi-Fi: nearby networks (strongest first, Saved / On marked) → tap one → type the password on the watch keyboard → Join. Saved and open networks join with one tap. "Setup page (DevX key)" at the bottom opens the phone setup page (still needed once for the DevX key)
 - **Steps to DevX:** at every sync the watch sends today + the last 6 days to DevX; they show as "Steps today" on your member app Home (devx-gym-backend PR #254)
-- **Live alerts (off by default):** stays on a known Wi-Fi and checks DevX every minute so Ace pop-ups arrive within ~1 min (uses more battery); off = check every 30 min
+- **Live alerts (off by default):** stays on a known Wi-Fi and checks DevX every minute so alerts arrive within ~1 min (uses more battery). Tap the tile again for **only on this network**: Live alerts just while the watch is on the network it's on now (e.g. your phone's hotspot when you're out), normal syncs everywhere else
+- **Sync every (pull-down panel):** 5 / 10 / 30 min, 10 by default (time, update check, DevX alerts, steps and today's totals). No syncs while the watch is resting on a table
 - **Settings:** brightness, sound (off / low / high), screen-off time (10 / 20 / 30 s)
 - **DevX key:** alerts and switches need `WATCH_TOKEN` on the server (devx-gym-backend) and the same key typed into the setup page (hold the face 3 s)
 - Goal reached: bar turns yellow + "GOAL REACHED!" + a chirp at 8,000 steps
@@ -34,7 +35,7 @@ DevX / Ace firmware for the Waveshare ESP32-C6-Touch-AMOLED-2.06 (410 × 502 AMO
 - Sync shows each step in the footer (Wi-Fi → Time → Update)
 - Logging is switched off on battery (no laptop listening)
 - **Wi-Fi setup:** hold the screen 3 s (or first boot) → join `Ace-Watch-Setup` on your phone → pick Wi-Fi + password. Remembers up to 5 networks.
-- Every 30 min: joins the strongest known Wi-Fi, syncs the time, checks for an update, then turns Wi-Fi off to save battery
+- Every 10 min (Sync every): joins the strongest known Wi-Fi, syncs the time, checks for an update, then turns Wi-Fi off to save battery
 - **Wi-Fi updates (OTA):** installs the latest GitHub release automatically; rolls back if a new version fails to start
 
 ## Releasing a new version

@@ -955,8 +955,8 @@ static bool banner_check(void)
 }
 
 /* ---------- Quick panel: swipe down on the face ---------- */
-static lv_obj_t *s_qp_wifi, *s_qp_bat, *s_qp_bright, *s_qp_sound, *s_qp_live, *s_qp_tmo, *s_qp_raise;
-static char s_qp_wifi_buf[48], s_qp_bat_buf[32], s_qp_bright_buf[24], s_qp_sound_buf[24], s_qp_live_buf[8], s_qp_tmo_buf[8], s_qp_raise_buf[8];
+static lv_obj_t *s_qp_wifi, *s_qp_bat, *s_qp_bright, *s_qp_sound, *s_qp_live, *s_qp_tmo, *s_qp_raise, *s_qp_sync;
+static char s_qp_wifi_buf[48], s_qp_bat_buf[32], s_qp_bright_buf[24], s_qp_sound_buf[24], s_qp_live_buf[16], s_qp_tmo_buf[8], s_qp_raise_buf[8], s_qp_sync_buf[12];
 
 static void qp_gesture_cb(lv_event_t *e)
 {
@@ -987,7 +987,12 @@ static void qp_tile_cb(lv_event_t *e)
         break;
     case 3: panel_close(); wifi_ui_open(); return;      /* Wi-Fi picker on the watch */
     case 4:
-        g_set.live = !g_set.live;
+        /* Off -> On -> "only on this network" (the one the watch is on / was last on, e.g. your hotspot) */
+        if (g_set.live == 0) g_set.live = 1;
+        else if (g_set.live == 1 && g_wifi_ssid[0]) {
+            g_set.live = 2;
+            strlcpy(g_set.live_ssid, g_wifi_ssid, sizeof(g_set.live_ssid));
+        } else g_set.live = 0;
         settings_save();
         net_sync_now();          /* connect (or disconnect) right away */
         break;
@@ -997,6 +1002,10 @@ static void qp_tile_cb(lv_event_t *e)
         break;
     case 6:
         g_set.raise = !g_set.raise;      /* raise to wake (off while driving) */
+        settings_save();
+        break;
+    case 7:
+        g_set.sync = (g_set.sync + 1) % 3;   /* sync every 5 / 10 / 30 min (from the next sync) */
         settings_save();
         break;
     }
@@ -1024,6 +1033,9 @@ static lv_obj_t *qp_tile(lv_obj_t *grid, const char *icon, const char *name, int
     lv_label_set_text(n, name);
     if (val) {
         *val = make_label(t, &lv_font_montserrat_14, COL_YELLOW);
+        lv_obj_set_width(*val, 96);
+        lv_label_set_long_mode(*val, LV_LABEL_LONG_CLIP);
+        lv_obj_set_style_text_align(*val, LV_TEXT_ALIGN_CENTER, 0);
         lv_label_set_text_static(*val, buf);
     }
     return t;
@@ -1042,7 +1054,7 @@ static void panel_update(void)
     case NET_NO_WIFI:  w = "No Wi-Fi saved yet"; break;
     case NET_SETUP:    w = "Wi-Fi setup open"; break;
     default:
-        if (g_net_last_sync[0]) { snprintf(tmp, sizeof(tmp), "Synced at %s%s", g_net_last_sync, g_set.live ? " - live" : ""); w = tmp; }
+        if (g_net_last_sync[0]) { snprintf(tmp, sizeof(tmp), "Synced at %s%s", g_net_last_sync, g_set.live == 1 ? " - live" : g_set.live == 2 ? " - live on hotspot" : ""); w = tmp; }
         else w = "Not synced yet";
         break;
     }
@@ -1054,7 +1066,9 @@ static void panel_update(void)
     static const char *const VO[3] = {"Off", "Low", "High"};
     label_printf(s_qp_bright, s_qp_bright_buf, sizeof(s_qp_bright_buf), "%s", BR[g_set.bright & 3]);
     label_printf(s_qp_sound, s_qp_sound_buf, sizeof(s_qp_sound_buf), "%s", VO[g_set.volume % 3]);
-    label_printf(s_qp_live, s_qp_live_buf, sizeof(s_qp_live_buf), "%s", g_set.live ? "On" : "Off");
+    if (g_set.live == 2) label_printf(s_qp_live, s_qp_live_buf, sizeof(s_qp_live_buf), "%.11s", g_set.live_ssid);
+    else label_printf(s_qp_live, s_qp_live_buf, sizeof(s_qp_live_buf), "%s", g_set.live ? "On" : "Off");
+    label_printf(s_qp_sync, s_qp_sync_buf, sizeof(s_qp_sync_buf), "%lu min", (unsigned long)(settings_sync_ms() / 60000));
     label_printf(s_qp_tmo, s_qp_tmo_buf, sizeof(s_qp_tmo_buf), "%lu s", (unsigned long)(settings_timeout_ms() / 1000));
     label_printf(s_qp_raise, s_qp_raise_buf, sizeof(s_qp_raise_buf), "%s", g_set.raise ? "On" : "Off");
 }
@@ -1090,13 +1104,14 @@ static void panel_open(void)
     lv_obj_remove_flag(grid, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_flag(grid, LV_OBJ_FLAG_GESTURE_BUBBLE);
     lv_obj_align(grid, LV_ALIGN_TOP_MID, 0, 92);
-    s_qp_bright_buf[0] = s_qp_sound_buf[0] = s_qp_live_buf[0] = s_qp_tmo_buf[0] = s_qp_raise_buf[0] = 0;
+    s_qp_bright_buf[0] = s_qp_sound_buf[0] = s_qp_live_buf[0] = s_qp_tmo_buf[0] = s_qp_raise_buf[0] = s_qp_sync_buf[0] = 0;
     qp_tile(grid, LV_SYMBOL_REFRESH, "Sync now", 0, NULL, NULL);
     qp_tile(grid, LV_SYMBOL_BELL, "Live alerts", 4, &s_qp_live, s_qp_live_buf);
     qp_tile(grid, LV_SYMBOL_UP, "Raise wake", 6, &s_qp_raise, s_qp_raise_buf);
     qp_tile(grid, LV_SYMBOL_IMAGE, "Brightness", 1, &s_qp_bright, s_qp_bright_buf);
     qp_tile(grid, LV_SYMBOL_VOLUME_MAX, "Sound", 2, &s_qp_sound, s_qp_sound_buf);
     qp_tile(grid, LV_SYMBOL_EYE_CLOSE, "Screen off", 5, &s_qp_tmo, s_qp_tmo_buf);
+    qp_tile(grid, LV_SYMBOL_LOOP, "Sync every", 7, &s_qp_sync, s_qp_sync_buf);
     qp_tile(grid, LV_SYMBOL_WIFI, "Wi-Fi", 3, NULL, NULL);
 
     /* close: swipe up anywhere, or tap the bar at the bottom */
