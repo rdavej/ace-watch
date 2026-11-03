@@ -241,8 +241,48 @@ static void gate_cb(lv_event_t *e)
     }
 }
 
+/* Shared styles for the tiles (one copy each, instead of a copy on every tile: saves memory) */
+static lv_style_t st_tile, st_tile_on, st_tile_off, st_ic_on, st_ic_off, st_nm_on, st_nm_off, st_nm_dim, st_sv_on, st_sv_off;
+static void tile_styles(void)
+{
+    static bool done;
+    if (done) return;
+    done = true;
+    lv_style_init(&st_tile);
+    lv_style_set_radius(&st_tile, 24);
+    lv_style_set_bg_opa(&st_tile, LV_OPA_COVER);
+    lv_style_init(&st_tile_on);
+    lv_style_set_bg_color(&st_tile_on, lv_color_hex(COL_BLUE));
+    lv_style_init(&st_tile_off);
+    lv_style_set_bg_color(&st_tile_off, lv_color_hex(0x0A1226));
+    lv_style_set_border_color(&st_tile_off, lv_color_hex(COL_TRACK));
+    lv_style_set_border_width(&st_tile_off, 1);
+    lv_style_init(&st_ic_on);
+    lv_style_set_image_recolor(&st_ic_on, lv_color_hex(COL_DARK));
+    lv_style_set_image_recolor_opa(&st_ic_on, LV_OPA_COVER);
+    lv_style_init(&st_ic_off);
+    lv_style_set_image_recolor(&st_ic_off, lv_color_hex(COL_GREY));
+    lv_style_set_image_recolor_opa(&st_ic_off, LV_OPA_COVER);
+    lv_style_init(&st_nm_on);
+    lv_style_set_text_font(&st_nm_on, &lv_font_montserrat_16);
+    lv_style_set_text_color(&st_nm_on, lv_color_hex(COL_DARK));
+    lv_style_init(&st_nm_off);
+    lv_style_set_text_font(&st_nm_off, &lv_font_montserrat_16);
+    lv_style_set_text_color(&st_nm_off, lv_color_hex(COL_WHITE));
+    lv_style_init(&st_nm_dim);
+    lv_style_set_text_font(&st_nm_dim, &lv_font_montserrat_16);
+    lv_style_set_text_color(&st_nm_dim, lv_color_hex(COL_GREY));
+    lv_style_init(&st_sv_on);
+    lv_style_set_text_font(&st_sv_on, &lv_font_montserrat_14);
+    lv_style_set_text_color(&st_sv_on, lv_color_hex(COL_DARK));
+    lv_style_init(&st_sv_off);
+    lv_style_set_text_font(&st_sv_off, &lv_font_montserrat_14);
+    lv_style_set_text_color(&st_sv_off, lv_color_hex(COL_GREY));
+}
+
 static void fill_switches(void)
 {
+    tile_styles();
     lv_obj_clean(s_list);
     s_gate_btn = NULL;
     if (!net_lock(20)) return;
@@ -289,35 +329,29 @@ static void fill_switches(void)
     for (int i = 0; i < n; i++) {
         if (i == gate) continue;
         bool on = g_sw[i].on == 1 && g_sw[i].online;
-        uint32_t fg = on ? COL_DARK : g_sw[i].online ? COL_WHITE : COL_GREY;
         lv_obj_t *t = lv_obj_create(grid);
         lv_obj_remove_style_all(t);
+        lv_obj_add_style(t, &st_tile, 0);
+        lv_obj_add_style(t, on ? &st_tile_on : &st_tile_off, 0);
         lv_obj_set_size(t, 174, 100);
-        lv_obj_set_style_radius(t, 24, 0);
-        lv_obj_set_style_bg_opa(t, LV_OPA_COVER, 0);
-        lv_obj_set_style_bg_color(t, lv_color_hex(on ? COL_BLUE : 0x0A1226), 0);
-        lv_obj_set_style_bg_color(t, lv_color_hex(on ? 0x7FD0FF : 0x16223F), LV_STATE_PRESSED);
-        if (!on) {
-            lv_obj_set_style_border_color(t, lv_color_hex(COL_TRACK), 0);
-            lv_obj_set_style_border_width(t, 1, 0);
-        }
         lv_obj_add_event_cb(t, sw_tap_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
 
         lv_obj_t *ic = lv_image_create(t);                       /* child 0 */
         lv_image_set_src(ic, switch_icon(g_sw[i].name));
-        lv_obj_set_style_image_recolor(ic, lv_color_hex(on ? COL_DARK : COL_GREY), 0);
-        lv_obj_set_style_image_recolor_opa(ic, LV_OPA_COVER, 0);
-        lv_obj_align(ic, LV_ALIGN_TOP_LEFT, 14, 12);
+        lv_obj_add_style(ic, on ? &st_ic_on : &st_ic_off, 0);
+        lv_obj_set_pos(ic, 14, 12);
 
-        lv_obj_t *nm = label(t, &lv_font_montserrat_16, fg);    /* child 1 */
+        lv_obj_t *nm = lv_label_create(t);                       /* child 1 */
+        lv_obj_add_style(nm, on ? &st_nm_on : g_sw[i].online ? &st_nm_off : &st_nm_dim, 0);
         lv_obj_set_width(nm, 148);
         lv_label_set_long_mode(nm, LV_LABEL_LONG_DOT);
         lv_label_set_text(nm, g_sw[i].name);
-        lv_obj_align(nm, LV_ALIGN_BOTTOM_LEFT, 14, -28);
+        lv_obj_set_pos(nm, 14, 52);
 
-        lv_obj_t *st = label(t, &lv_font_montserrat_14, on ? COL_DARK : COL_GREY);   /* child 2 */
+        lv_obj_t *st = lv_label_create(t);                       /* child 2 */
+        lv_obj_add_style(st, on ? &st_sv_on : &st_sv_off, 0);
         lv_label_set_text(st, !g_sw[i].online ? "offline" : g_sw[i].on < 0 ? "?" : on ? "ON" : "OFF");
-        lv_obj_align(st, LV_ALIGN_BOTTOM_LEFT, 14, -10);
+        lv_obj_set_pos(st, 14, 74);
     }
     s_rev = g_sw_rev;
     net_unlock();

@@ -34,9 +34,11 @@ CONFIG_HTTPD_MAX_URI_LEN=512
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=4096
 
 # Memory: smaller screen buffer leaves room for Wi-Fi
-CONFIG_BSP_DISPLAY_LVGL_BUF_HEIGHT=32
-CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=6
-CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=16
+CONFIG_BSP_DISPLAY_LVGL_BUF_HEIGHT=20
+# v0.6.5: fewer receive buffers and a 20-line screen buffer: the watch ran out of memory
+# (freeze @ DevX, 1 KB left) when a screen and a secure connection needed memory together
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=5
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=10
 # 8 (not 16): talking to Ace streams audio, and full send buffers left the screen no memory
 CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=8
 
