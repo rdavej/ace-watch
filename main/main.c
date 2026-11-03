@@ -176,8 +176,8 @@ static lv_obj_t *s_steps;
 static lv_obj_t *s_ring;          /* steps ring around the face */
 static lv_obj_t *s_sets_lbl, *s_alerts_lbl;
 static lv_obj_t *s_gate_pill, *s_gate_lbl;
-static lv_obj_t *s_gym_pill, *s_gym_lbl, *s_alert_bar;   /* in gym now; alerts waiting */
-static char s_gym_buf[8];
+static lv_obj_t *s_gym_pill, *s_gym_lbl, *s_rm_pill, *s_rm_lbl, *s_alert_bar;   /* visits / RM today; alerts waiting */
+static char s_gym_buf[8], s_rm_buf[12];
 static uint32_t s_gate_armed_at, s_gate_shown_at;   /* tap once = armed (3 s), result shown 4 s */
 static bool s_gate_wait;
 static void gate_pill_tick(void);
@@ -266,13 +266,20 @@ static void update_clock(void)
     } else {
         lv_obj_add_flag(s_alert_bar, LV_OBJ_FLAG_HIDDEN);
     }
-    /* members training at the gym right now (from DevX, each sync) */
-    int in_gym = g_in_gym;
-    if (in_gym >= 0 && net_has_key()) {
-        label_printf(s_gym_lbl, s_gym_buf, sizeof(s_gym_buf), "%d", in_gym);
+    /* today at the gym (from DevX, each sync): visits and RM collected */
+    int visits = g_visits_today, rm = g_collected_today;
+    if (visits >= 0 && net_has_key()) {
+        label_printf(s_gym_lbl, s_gym_buf, sizeof(s_gym_buf), "%d", visits);
         lv_obj_remove_flag(s_gym_pill, LV_OBJ_FLAG_HIDDEN);
     } else {
         lv_obj_add_flag(s_gym_pill, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (rm >= 0 && net_has_key()) {
+        if (rm >= 1000) label_printf(s_rm_lbl, s_rm_buf, sizeof(s_rm_buf), "%d,%03d", rm / 1000, rm % 1000);
+        else label_printf(s_rm_lbl, s_rm_buf, sizeof(s_rm_buf), "%d", rm);
+        lv_obj_remove_flag(s_rm_pill, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(s_rm_pill, LV_OBJ_FLAG_HIDDEN);
     }
     gate_pill_tick();
 }
@@ -288,7 +295,7 @@ static void gate_pill_show(const char *txt, uint32_t bg, uint32_t fg)
 static void gate_pill_idle(void)
 {
     s_gate_armed_at = s_gate_shown_at = 0;
-    gate_pill_show(LV_SYMBOL_HOME " GATE", 0x0A1226, COL_BLUE);
+    gate_pill_show(LV_SYMBOL_HOME, 0x0A1226, COL_BLUE);     /* just the gate icon: room for today's totals */
 }
 
 static void gate_pill_cb(lv_event_t *e)
@@ -1231,7 +1238,7 @@ static void build_ui(void)
     lv_obj_remove_style_all(bot);
     lv_obj_set_size(bot, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(bot, LV_FLEX_FLOW_ROW);
-    lv_obj_set_style_pad_column(bot, 10, 0);
+    lv_obj_set_style_pad_column(bot, 8, 0);
     lv_obj_set_flex_align(bot, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_remove_flag(bot, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_align(bot, LV_ALIGN_TOP_MID, 0, 408);
@@ -1239,7 +1246,7 @@ static void build_ui(void)
     lv_obj_t *sp = lv_obj_create(bot);
     lv_obj_remove_style_all(sp);
     lv_obj_set_size(sp, LV_SIZE_CONTENT, 36);
-    lv_obj_set_style_pad_hor(sp, 14, 0);
+    lv_obj_set_style_pad_hor(sp, 12, 0);
     lv_obj_set_style_pad_column(sp, 6, 0);
     lv_obj_set_style_radius(sp, 18, 0);
     lv_obj_set_style_bg_color(sp, lv_color_hex(0x0A1226), 0);
@@ -1255,7 +1262,7 @@ static void build_ui(void)
     lv_obj_set_style_text_letter_space(sl, 1, 0);
     lv_label_set_text(sl, "STEPS");
 
-    /* In gym now: people icon + count */
+    /* Visits today: people icon + count */
     s_gym_pill = lv_obj_create(bot);
     lv_obj_remove_style_all(s_gym_pill);
     lv_obj_set_size(s_gym_pill, LV_SIZE_CONTENT, 36);
@@ -1276,11 +1283,32 @@ static void build_ui(void)
     lv_label_set_text_static(s_gym_lbl, s_gym_buf);
     lv_obj_add_flag(s_gym_pill, LV_OBJ_FLAG_HIDDEN);
 
+    /* RM collected today */
+    s_rm_pill = lv_obj_create(bot);
+    lv_obj_remove_style_all(s_rm_pill);
+    lv_obj_set_size(s_rm_pill, LV_SIZE_CONTENT, 36);
+    lv_obj_set_style_pad_hor(s_rm_pill, 12, 0);
+    lv_obj_set_style_pad_column(s_rm_pill, 5, 0);
+    lv_obj_set_style_radius(s_rm_pill, 18, 0);
+    lv_obj_set_style_bg_color(s_rm_pill, lv_color_hex(0x0A1226), 0);
+    lv_obj_set_style_bg_opa(s_rm_pill, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(s_rm_pill, 1, 0);
+    lv_obj_set_style_border_color(s_rm_pill, lv_color_hex(0x13203D), 0);
+    lv_obj_set_flex_flow(s_rm_pill, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(s_rm_pill, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_remove_flag(s_rm_pill, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_t *rmt = make_label(s_rm_pill, &lv_font_montserrat_14, COL_GREY);
+    lv_label_set_text(rmt, "RM");
+    s_rm_lbl = make_label(s_rm_pill, &lv_font_montserrat_16, COL_YELLOW);
+    s_rm_buf[0] = 0;
+    lv_label_set_text_static(s_rm_lbl, s_rm_buf);
+    lv_obj_add_flag(s_rm_pill, LV_OBJ_FLAG_HIDDEN);
+
     /* Gate pill (only when the watch key is set) */
     s_gate_pill = lv_obj_create(bot);
     lv_obj_remove_style_all(s_gate_pill);
     lv_obj_set_size(s_gate_pill, LV_SIZE_CONTENT, 36);
-    lv_obj_set_style_pad_hor(s_gate_pill, 14, 0);
+    lv_obj_set_style_pad_hor(s_gate_pill, 11, 0);
     lv_obj_set_style_radius(s_gate_pill, 18, 0);
     lv_obj_set_style_bg_opa(s_gate_pill, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(s_gate_pill, 1, 0);

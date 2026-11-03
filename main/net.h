@@ -66,6 +66,8 @@ extern volatile int g_feed_new;             /* new since last alert (screen clea
 extern volatile req_state_t g_feed_state;
 
 extern volatile int g_in_gym;               /* members training at the gym now, -1 = unknown */
+extern volatile int g_visits_today;         /* people who came in today, -1 = unknown */
+extern volatile int g_collected_today;      /* RM collected today (rounded), -1 = unknown */
 bool net_has_key(void);                     /* watch key entered on the setup page */
 void net_switches_refresh(void);
 void net_switch_set(const char *id, bool on);

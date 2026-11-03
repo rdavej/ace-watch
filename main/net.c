@@ -613,6 +613,8 @@ static void job_gate(void)
 }
 
 volatile int g_in_gym = -1;
+volatile int g_visits_today = -1;
+volatile int g_collected_today = -1;
 
 /* An alert made by the watch itself (not from DevX): shown like the others, pops up */
 static void local_alert(const char *title, const char *body)
@@ -666,12 +668,13 @@ static void job_feed(void)
     int n = 0, fresh = 0;
     int64_t newest = s_feed_seen;
     char *p = s_resp, *l;
-    char *first = next_line(&p);           /* ok|server time|in gym now */
+    char *first = next_line(&p);           /* ok|server time|in gym now|visits today|RM collected today */
     if (first) {
-        char *bar = strchr(first + 3, '|');
-        int n_in = -1;
-        if (bar && bar[1] >= '0' && bar[1] <= '9') n_in = atoi(bar + 1);
-        g_in_gym = n_in;
+        char *f[5] = {0};
+        int nf = split(first, f, 5);
+        g_in_gym = nf > 2 && f[2][0] >= '0' && f[2][0] <= '9' ? atoi(f[2]) : -1;
+        g_visits_today = nf > 3 && f[3][0] >= '0' && f[3][0] <= '9' ? atoi(f[3]) : -1;
+        g_collected_today = nf > 4 && f[4][0] >= '0' && f[4][0] <= '9' ? (int)(atof(f[4]) + 0.5) : -1;
     }
     xSemaphoreTake(s_lock, portMAX_DELAY);
     while ((l = next_line(&p)) && n < FEED_MAX) {
