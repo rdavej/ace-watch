@@ -2,7 +2,6 @@
  * Extra screens, built when you swipe to them and deleted when you leave
  * (so they only use memory while they're showing):
  *   Steps     last 7 days as bars
- *   Alerts    DevX notifications (copy of the Director's pushes)
  *   Switches  Smart Life switches + gym gate, via the DevX server
  *   Settings  brightness, sound, screen-off time
  */
@@ -32,7 +31,7 @@ static int s_kind = -1;
 static lv_obj_t *s_root;
 static lv_obj_t *s_status;     /* status line at the bottom (alerts, switches) */
 static lv_obj_t *s_list;       /* list container (alerts, switches) */
-static uint32_t s_rev;
+static uint32_t s_rev;   /* switches list version shown */
 static int s_state = -1;
 
 static lv_obj_t *label(lv_obj_t *parent, const lv_font_t *font, uint32_t color)
@@ -174,77 +173,6 @@ static void build_steps(lv_obj_t *p)
             lv_obj_set_pos(v, x - GAP / 2, BASE_Y - h - 22);
         }
     }
-}
-
-/* ======================= Alerts ======================= */
-
-static void fill_alerts(void)
-{
-    lv_obj_clean(s_list);
-    if (!net_lock(20)) return;
-    int n = g_feed_n;
-    int64_t now_ms = (int64_t)time(NULL) * 1000;
-    for (int i = 0; i < n; i++) {
-        lv_obj_t *it = lv_obj_create(s_list);
-        lv_obj_remove_style_all(it);
-        lv_obj_set_size(it, LV_PCT(100), LV_SIZE_CONTENT);
-        lv_obj_set_style_bg_color(it, lv_color_hex(0x0A1226), 0);
-        lv_obj_set_style_bg_opa(it, LV_OPA_COVER, 0);
-        lv_obj_set_style_radius(it, 16, 0);
-        lv_obj_set_style_pad_all(it, 12, 0);
-        lv_obj_set_flex_flow(it, LV_FLEX_FLOW_COLUMN);
-        lv_obj_set_style_pad_row(it, 4, 0);
-        lv_obj_remove_flag(it, LV_OBJ_FLAG_CLICKABLE);
-
-        char ago[16];
-        int64_t m = (now_ms - g_feed[i].at) / 60000;
-        if (now_ms < 1700000000000LL || m < 0) ago[0] = 0;
-        else if (m < 1) snprintf(ago, sizeof(ago), "now");
-        else if (m < 60) snprintf(ago, sizeof(ago), "%dm ago", (int)m);
-        else if (m < 48 * 60) snprintf(ago, sizeof(ago), "%dh ago", (int)(m / 60));
-        else snprintf(ago, sizeof(ago), "%dd ago", (int)(m / 1440));
-
-        lv_obj_t *a = label(it, &lv_font_montserrat_16, COL_YELLOW);
-        lv_label_set_text(a, ago);
-        lv_obj_t *tt = label(it, &lv_font_montserrat_20, COL_WHITE);
-        lv_obj_set_width(tt, LV_PCT(100));
-        lv_label_set_long_mode(tt, LV_LABEL_LONG_WRAP);
-        lv_label_set_text(tt, g_feed[i].title);
-        if (g_feed[i].body[0]) {
-            lv_obj_t *bd = label(it, &lv_font_montserrat_16, COL_GREY);
-            lv_obj_set_width(bd, LV_PCT(100));
-            lv_label_set_long_mode(bd, LV_LABEL_LONG_WRAP);
-            lv_label_set_text(bd, g_feed[i].body);
-        }
-    }
-    s_rev = g_feed_rev;
-    net_unlock();
-    if (!n) {
-        lv_obj_t *e = label(s_list, &lv_font_montserrat_20, COL_GREY);
-        lv_label_set_text(e, "No alerts yet");
-    }
-}
-
-static void build_alerts(lv_obj_t *p)
-{
-    if (!net_has_key()) { no_key_note(p); return; }
-    s_list = list_box(p, 76, 350);
-    s_status = status_line(p);
-    g_feed_new = 0;
-    fill_alerts();
-    net_feed_refresh();
-}
-
-static void tick_alerts(void)
-{
-    if (!s_list) return;
-    if (s_rev != g_feed_rev) fill_alerts();
-    if (s_state != g_feed_state) {
-        s_state = g_feed_state;
-        lv_label_set_text(s_status, s_state == REQ_BUSY ? LV_SYMBOL_WIFI " Checking..." :
-                                    s_state == REQ_ERR ? "Couldn't check - try later" : "");
-    }
-    g_feed_new = 0;
 }
 
 /* ======================= Switches ======================= */
@@ -466,7 +394,7 @@ static void build_settings(lv_obj_t *p)
 void page_open(int kind, lv_obj_t *scr)
 {
     page_close();
-    static const char *const TITLE[PAGE_COUNT] = { "STOPWATCH", "STEPS", "DEVX ALERTS", "SWITCHES", "SETTINGS" };
+    static const char *const TITLE[PAGE_COUNT] = { "STOPWATCH", "STEPS", "SWITCHES", "SETTINGS" };
     s_kind = kind;
     s_root = panel(scr, TITLE[kind]);
     s_list = NULL;
@@ -475,7 +403,6 @@ void page_open(int kind, lv_obj_t *scr)
     switch (kind) {
     case PAGE_STOPWATCH: stopwatch_build(s_root); break;
     case PAGE_STEPS:    build_steps(s_root); break;
-    case PAGE_ALERTS:   build_alerts(s_root); break;
     case PAGE_SWITCHES: build_switches(s_root); break;
     case PAGE_SETTINGS: build_settings(s_root); break;
     }
@@ -497,7 +424,6 @@ void page_close(void)
 void page_tick(void)
 {
     switch (s_kind) {
-    case PAGE_ALERTS:   tick_alerts(); break;
     case PAGE_SWITCHES: tick_switches(); break;
     default: break;
     }

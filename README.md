@@ -10,11 +10,12 @@ DevX / Ace firmware for the Waveshare ESP32-C6-Touch-AMOLED-2.06 (410 × 502 AMO
 - Raise to wake: learns your viewing angle from tap-to-wake, then wakes when you lift your wrist into it (arm must be really down ~0.8 s first, come up within 1 s and be held steady). **Raise wake** tile in the pull-down panel turns it off (driving). Lower the wrist again and a raise-woken screen turns off after ~2 s
 - Palm cover: cover the screen with your palm to turn it off straight away
 - **Workout screen (swipe left, swipe right to go back):** rest ring countdown, presets 60 s / 90 s / 2 min, big SET DONE button (adds a set + starts rest), workout clock. Beeps at 3-2-1, rest over → three beeps and the screen lights up yellow "GO!". Tap the ring twice while resting to skip the rest. END (tap twice) stops the workout clock and shows the total
-- **Swipe left through:** Face → Workout → Stopwatch → Steps → Alerts → Switches → Settings (swipe right to go back)
+- **Swipe left through:** Face → Workout → Stopwatch → Steps → Switches → Settings (swipe right to go back)
+- **Alerts: swipe up from the bottom of the face** (swipe down or tap the bar to close): DevX alert cards with the Ace icon, newest first, time sent; "Clear all" hides them (new ones still come in). The pop-up's Open goes here too
 - **Gate on the face:** tap GATE twice to open the gym gate (shows once the watch key is set)
 - **Stopwatch:** START/STOP, LAP while running, RESET when stopped, laps list with the fastest in yellow; keeps running in the background and shows on the face
 - **Steps screen:** last 7 days as bars with the 8,000 goal line and the daily average
-- **DevX alerts:** a copy of the pushes DevX/Ace send the Director, checked at every sync (every 30 min) and when you open the screen; new ones pop up as a banner with a ding
+- **DevX alerts:** a copy of the pushes DevX/Ace send the Director, checked at every sync (every 30 min) and when you swipe them up; new ones pop up as a banner with a ding
 - **Switches:** Smart Life switches through the DevX server (tap a row to switch it), plus OPEN GATE (tap twice) for the gym entrance gate. Wi-Fi connects on the first tap and stays on 1 min for the next one
 - **Pull-down panel (swipe down on the face):** Wi-Fi/sync status, battery, Sync now, Live alerts, Raise wake, brightness, sound, screen-off time, Wi-Fi. Swipe up to close
 - **Wi-Fi on the watch:** panel → Wi-Fi: nearby networks (strongest first, Saved / On marked) → tap one → type the password on the watch keyboard → Join. Saved and open networks join with one tap. "Setup page (DevX key)" at the bottom opens the phone setup page (still needed once for the DevX key)

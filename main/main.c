@@ -35,6 +35,7 @@
 #include "pages.h"
 #include "rest.h"
 #include "wifi_ui.h"
+#include "alerts_ui.h"
 #include "settings.h"
 #include "stopwatch.h"
 
@@ -542,8 +543,8 @@ static void screen_on(void)
     s_wake_quiet = false;
 }
 
-/* Screens, swipe left / right: Face -> Workout -> Stopwatch -> Steps -> Alerts -> Switches -> Settings */
-enum { PG_FACE, PG_WORKOUT, PG_STOPWATCH, PG_STEPS, PG_ALERTS, PG_SWITCHES, PG_SETTINGS, PG_N };
+/* Screens, swipe left / right: Face -> Workout -> Stopwatch -> Steps -> Switches -> Settings (alerts: swipe up) */
+enum { PG_FACE, PG_WORKOUT, PG_STOPWATCH, PG_STEPS, PG_SWITCHES, PG_SETTINGS, PG_N };
 static int s_page = PG_FACE;
 static void nav_go(int pg);
 static bool banner_check(void);
@@ -572,6 +573,7 @@ static void power_timer_cb(lv_timer_t *t)
     uint32_t now = lv_tick_get();
     bool keep_on = g_net_state == NET_SETUP || g_net_state == NET_UPDATING || wifi_ui_busy();
     wifi_ui_tick();
+    alerts_ui_tick();
 
     /* Palm: check while the screen is on, and while covered (to see it lift) */
     if (s_screen_on || s_palm_down) {
@@ -787,14 +789,13 @@ static void long_press_cb(lv_event_t *e)
 
 /* Swipe left: workout screen. Swipe right: watch face. */
 /* ---------- Screens: swipe left / right ----------
-   Face -> Workout -> Steps -> Alerts -> Switches -> Settings */
+   Face -> Workout -> Stopwatch -> Steps -> Switches -> Settings; alerts: swipe up on the face */
 static void nav_go(int pg)
 {
     if (pg == s_page || pg < 0 || pg >= PG_N) return;
     page_close();
     workout_show(pg == PG_WORKOUT);
     if (pg >= PG_STOPWATCH) page_open(PAGE_STOPWATCH + (pg - PG_STOPWATCH), lv_screen_active());
-    if (pg == PG_ALERTS) s_unread = 0;
     s_page = pg;
 }
 
@@ -812,6 +813,10 @@ static void gesture_cb(lv_event_t *e)
     if (d == LV_DIR_LEFT) nav_go(s_page + 1);
     else if (d == LV_DIR_RIGHT) nav_go(s_page - 1);
     else if (d == LV_DIR_BOTTOM && s_page == PG_FACE) panel_open();   /* pull down from the face */
+    else if (d == LV_DIR_TOP && s_page == PG_FACE) {                   /* swipe up: DevX alerts */
+        alerts_ui_open(s_unread);
+        s_unread = 0;
+    }
     else moved = false;
     if (moved) {
         s_last_nav = lv_tick_get();
@@ -830,7 +835,7 @@ static void pop_hide(void)
 }
 
 static void pop_dismiss_cb(lv_event_t *e) { (void)e; s_unread = 0; pop_hide(); }   /* seen = no "ALERTS" count on the face */
-static void pop_open_cb(lv_event_t *e) { (void)e; pop_hide(); nav_go(PG_ALERTS); }
+static void pop_open_cb(lv_event_t *e) { (void)e; pop_hide(); alerts_ui_open(s_unread); s_unread = 0; }
 
 static lv_obj_t *pop_button(lv_obj_t *parent, const char *txt, bool primary, lv_event_cb_t cb)
 {
@@ -921,7 +926,7 @@ static void build_banner(void)
 static bool banner_check(void)
 {
     if (!g_feed_new) return false;
-    if (s_page == PG_ALERTS) { g_feed_new = 0; return false; }   /* already looking at them */
+    if (alerts_ui_is_open()) { g_feed_new = 0; return false; }   /* already looking at them */
     if (!net_lock(10)) return false;
     bool have = g_feed_n > 0;
     int fresh = g_feed_new;
