@@ -1,7 +1,7 @@
 #include "settings.h"
 #include "nvs.h"
 
-settings_t g_set = { .bright = 2, .volume = 2, .timeout = 1, .live = 0 };
+settings_t g_set = { .bright = 2, .volume = 2, .timeout = 1, .live = 0, .raise = 1 };
 
 static const uint8_t BRIGHT[4] = {40, 60, 80, 100};
 static const uint8_t VOLUME[3] = {0, 55, 85};
@@ -15,8 +15,10 @@ void settings_load(void)
     size_t n = sizeof(s);
     if (nvs_get_blob(h, "set", &s, &n) == ESP_OK && n >= 3 &&
         s.bright < 4 && s.volume < 3 && s.timeout < 3) {
-        if (n < sizeof(s)) s.live = 0;
+        if (n < 4) s.live = 0;             /* added in v0.5 */
+        if (n < 5) s.raise = 1;            /* added in v0.6 */
         s.live = s.live ? 1 : 0;
+        s.raise = s.raise ? 1 : 0;
         g_set = s;
     }
     nvs_close(h);

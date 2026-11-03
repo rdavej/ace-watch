@@ -7,6 +7,7 @@ typedef struct {
     uint8_t volume;    /* 0..2: Off, Low, High */
     uint8_t timeout;   /* 0..2: 10 s, 20 s, 30 s */
     uint8_t live;      /* 1 = Live alerts: stay on Wi-Fi, check DevX every minute */
+    uint8_t raise;     /* 1 = raise to wake on (turn off while driving) */
 } settings_t;
 
 extern settings_t g_set;

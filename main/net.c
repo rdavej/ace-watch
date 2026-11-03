@@ -97,8 +97,7 @@ volatile req_state_t g_feed_state = REQ_IDLE;
 static SemaphoreHandle_t s_lock;
 static int64_t s_feed_seen = 0;      /* newest notification already alerted (server ms, saved) */
 
-typedef enum { JOB_SW_LIST, JOB_SW_SET, JOB_GATE, JOB_FEED, JOB_ACE } job_kind_t;
-static void ace_fail(const char *msg);
+typedef enum { JOB_SW_LIST, JOB_SW_SET, JOB_GATE, JOB_FEED } job_kind_t;
 typedef struct { job_kind_t kind; char id[24]; bool on; } net_job_t;
 static QueueHandle_t s_jobs;
 static bool s_wifi_up = false;
@@ -427,7 +426,7 @@ static void ota_check(void)
 
 /* ---------------- DevX server ---------------- */
 
-static char s_resp[1536] __attribute__((aligned(4)));   /* also the audio buffer while talking to Ace */
+static char s_resp[1536];
 
 /* Plain-text request to the DevX server. Returns the HTTP status (or -1); reply text in s_resp. */
 /* One connection kept open while Wi-Fi is on: only the first request pays for the secure
@@ -435,11 +434,9 @@ static char s_resp[1536] __attribute__((aligned(4)));   /* also the audio buffer
 static esp_http_client_handle_t s_cli;
 static int s_resp_len;
 
-static bool s_ev_off;   /* reading the reply by hand (talk to Ace) */
 
 static esp_err_t devx_ev(esp_http_client_event_t *e)
 {
-    if (s_ev_off) return ESP_OK;
     if (e->event_id == HTTP_EVENT_ON_DATA) {
         int n = e->data_len;
         if (s_resp_len + n > (int)sizeof(s_resp) - 1) n = (int)sizeof(s_resp) - 1 - s_resp_len;
@@ -612,6 +609,8 @@ static void job_gate(void)
     }
 }
 
+volatile int g_in_gym = -1;
+
 static void job_feed(void)
 {
     g_feed_state = REQ_BUSY;
@@ -623,7 +622,13 @@ static void job_feed(void)
     int n = 0, fresh = 0;
     int64_t newest = s_feed_seen;
     char *p = s_resp, *l;
-    next_line(&p);                         /* ok|server time */
+    char *first = next_line(&p);           /* ok|server time|in gym now */
+    if (first) {
+        char *bar = strchr(first + 3, '|');
+        int n_in = -1;
+        if (bar && bar[1] >= '0' && bar[1] <= '9') n_in = atoi(bar + 1);
+        g_in_gym = n_in;
+    }
     xSemaphoreTake(s_lock, portMAX_DELAY);
     while ((l = next_line(&p)) && n < FEED_MAX) {
         char *f[3];
@@ -701,118 +706,6 @@ void net_switch_set(const char *id, bool on) { if (net_has_key()) { g_sw_state =
 void net_gate_open(void) { if (net_has_key()) { g_gate_state = REQ_BUSY; queue_job(JOB_GATE, NULL, false); } }
 void net_feed_refresh(void) { if (net_has_key()) { g_feed_state = REQ_BUSY; queue_job(JOB_FEED, NULL, false); } }
 
-/* ---------------- Talk to Ace ---------------- */
-volatile ace_state_t g_ace_state = ACE_IDLE;
-volatile bool g_ace_hold = false;
-volatile uint32_t g_ace_rev = 0;
-char g_ace_heard[164];
-char g_ace_reply[904];
-
-#define ACE_MAX_MS 8000
-#define ACE_MIN_FREE  (28 * 1024)   /* don't start below this */
-#define ACE_STOP_FREE (16 * 1024)   /* stop recording early below this */
-
-static void ace_fail(const char *msg)
-{
-    strlcpy(g_ace_reply, msg, sizeof(g_ace_reply));
-    g_ace_heard[0] = 0;
-    g_ace_rev++;
-    g_ace_state = ACE_ERR;
-}
-
-/* Record while the button is held and stream it to DevX (chunked upload, so the
-   recording never has to fit in memory), then read Ace's answer. */
-static void job_ace(void)
-{
-    if (!g_ace_hold) { g_ace_state = ACE_IDLE; return; }      /* let go before Wi-Fi was ready */
-    char url[160];
-    snprintf(url, sizeof(url), "%s/api/watch/ace", s_srv);
-    if (!s_cli) {
-        devx_req("GET", "/api/watch/feed?since=0&n=1", NULL);  /* opens the secure connection */
-        if (!s_cli) { ace_fail("Can't reach DevX"); return; }
-    }
-    /* Streaming audio fills Wi-Fi send buffers; leave room for the screen (it freezes without memory) */
-    unsigned fr = heap_caps_get_free_size(MALLOC_CAP_8BIT);
-    ESP_LOGI(TAG, "Ace: start, free %u, largest %u", fr, (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
-    if (fr < ACE_MIN_FREE) { ace_fail("Low memory - try again"); return; }
-    diag_phase("Ace mic");
-    if (!sound_mic_open()) { ace_fail("Microphone not available"); return; }
-    esp_http_client_set_url(s_cli, url);
-    esp_http_client_set_method(s_cli, HTTP_METHOD_POST);
-    esp_http_client_set_post_field(s_cli, NULL, 0);
-    esp_http_client_set_header(s_cli, "Content-Type", "audio/L16;rate=16000");
-    esp_http_client_set_timeout_ms(s_cli, 30000);            /* Ace can take a while to think */
-    if (esp_http_client_open(s_cli, -1) != ESP_OK) {           /* -1 = chunked upload */
-        devx_close();
-        sound_mic_close();
-        ace_fail("Can't reach DevX");
-        return;
-    }
-
-    g_ace_state = ACE_LISTEN;
-    diag_phase("Ace talk");
-    int64_t t0 = esp_timer_get_time();
-    int sent = 0;
-    bool ok = true;
-    while (g_ace_hold && esp_timer_get_time() - t0 < ACE_MAX_MS * 1000LL) {
-        int16_t *pcm = (int16_t *)s_resp;            /* s_resp isn't needed until the reply */
-        int n = sound_mic_read(pcm, 640);             /* 40 ms of mono audio */
-        if (n <= 0) break;
-        char hdr[12];
-        int hl = snprintf(hdr, sizeof(hdr), "%x\r\n", n * 2);
-        if (esp_http_client_write(s_cli, hdr, hl) < 0 ||
-            esp_http_client_write(s_cli, (const char *)pcm, n * 2) < 0 ||
-            esp_http_client_write(s_cli, "\r\n", 2) < 0) { ok = false; break; }
-        sent += n * 2;
-        if (heap_caps_get_free_size(MALLOC_CAP_8BIT) < ACE_STOP_FREE) {   /* send what we have */
-            ESP_LOGW(TAG, "Ace: memory low (%u), stopping early", (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT));
-            break;
-        }
-    }
-    sound_mic_close();
-    if (ok) ok = esp_http_client_write(s_cli, "0\r\n\r\n", 5) >= 0;
-    if (!ok) { devx_close(); ace_fail("Connection dropped"); return; }
-
-    g_ace_state = ACE_THINK;
-    diag_phase("Ace wait");
-    ESP_LOGI(TAG, "Ace: sent %d bytes, lowest free %u", sent, (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT));
-    s_ev_off = true;
-    esp_http_client_fetch_headers(s_cli);
-    int status = esp_http_client_get_status_code(s_cli);
-    int got = 0, r;
-    while (got < (int)sizeof(s_resp) - 1 &&
-           (r = esp_http_client_read(s_cli, s_resp + got, sizeof(s_resp) - 1 - got)) > 0) got += r;
-    s_resp[got] = 0;
-    s_ev_off = false;
-    devx_close();                     /* fresh connection next time (the 30 s timeout is set on this one) */
-    ESP_LOGI(TAG, "Ace: sent %d bytes, HTTP %d", sent, status);
-
-    if (strncmp(s_resp, "ok|", 3) == 0) {
-        char *nl = strchr(s_resp, '\n');
-        if (nl) *nl = 0;
-        strlcpy(g_ace_heard, s_resp + 3, sizeof(g_ace_heard));
-        strlcpy(g_ace_reply, nl ? nl + 1 : "", sizeof(g_ace_reply));
-        size_t l = strlen(g_ace_reply);
-        while (l && (g_ace_reply[l - 1] == '\n' || g_ace_reply[l - 1] == '\r')) g_ace_reply[--l] = 0;
-        g_ace_rev++;
-        g_ace_state = ACE_DONE;
-        sound_play(SOUND_NOTIFY);
-    } else {
-        char msg[64];
-        set_msg(msg, status < 0 ? "Can't reach DevX" : "Ace didn't answer");
-        ace_fail(msg);
-    }
-}
-
-void net_ace_start(void)
-{
-    if (!net_has_key()) { ace_fail("Add your DevX watch key first"); return; }
-    g_ace_state = ACE_CONNECT;
-    if (!queue_job(JOB_ACE, NULL, false)) ace_fail("Busy - try again");
-}
-
-void net_warm_up(void) { if (net_has_key()) queue_job(JOB_FEED, NULL, false); }
-
 bool net_lock(int wait_ms) { return s_lock && xSemaphoreTake(s_lock, pdMS_TO_TICKS(wait_ms)) == pdTRUE; }
 void net_unlock(void) { xSemaphoreGive(s_lock); }
 
@@ -832,8 +725,7 @@ static void run_jobs(void)
                 g_net_state = s_wifi_up ? NET_OK : NET_OFFLINE;
                 if (!s_wifi_up) {
                     const char *m = "No known Wi-Fi nearby";
-                    if (j.kind == JOB_ACE) ace_fail(m);
-                    else if (j.kind == JOB_GATE) { strlcpy(g_gate_msg, m, sizeof(g_gate_msg)); g_gate_state = REQ_ERR; }
+                    if (j.kind == JOB_GATE) { strlcpy(g_gate_msg, m, sizeof(g_gate_msg)); g_gate_state = REQ_ERR; }
                     else if (j.kind == JOB_FEED) g_feed_state = REQ_ERR;
                     else { strlcpy(g_sw_msg, m, sizeof(g_sw_msg)); g_sw_state = REQ_ERR; }
                     continue;
@@ -845,7 +737,6 @@ static void run_jobs(void)
             case JOB_SW_SET:  job_sw_set(j.id, j.on); break;
             case JOB_GATE:    job_gate(); break;
             case JOB_FEED:    job_feed(); break;
-            case JOB_ACE:     job_ace(); break;
             }
         }
         if (!any && !s_wifi_up) break;

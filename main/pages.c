@@ -461,115 +461,18 @@ static void build_settings(lv_obj_t *p)
     lv_obj_align(f, LV_ALIGN_BOTTOM_MID, 0, -36);
 }
 
-/* ======================= Ace ======================= */
-
-static lv_obj_t *s_ace_text, *s_ace_btn, *s_ace_lbl, *s_ace_status;
-static uint32_t s_ace_rev_shown;
-static int s_ace_state_shown = -1;
-
-static void ace_btn_cb(lv_event_t *e)
-{
-    lv_event_code_t c = lv_event_get_code(e);
-    if (c == LV_EVENT_PRESSED) {
-        if (g_ace_state == ACE_THINK || g_ace_state == ACE_LISTEN || g_ace_state == ACE_CONNECT) return;
-        g_ace_hold = true;
-        net_ace_start();
-    } else if (c == LV_EVENT_RELEASED || c == LV_EVENT_PRESS_LOST) {
-        g_ace_hold = false;
-    }
-}
-
-LV_IMAGE_DECLARE(img_ace_big);
-
-static void ace_shield(lv_obj_t *p, int x, int y)
-{
-    lv_obj_t *img = lv_image_create(p);
-    lv_image_set_src(img, &img_ace_big);
-    lv_obj_remove_flag(img, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_align(img, LV_ALIGN_TOP_MID, x, y);
-}
-
-static void build_ace(lv_obj_t *p)
-{
-    if (!net_has_key()) { no_key_note(p); return; }
-    ace_shield(p, 0, 52);
-
-    /* conversation: what Ace heard + his answer (scrolls) */
-    lv_obj_t *box = lv_obj_create(p);
-    lv_obj_remove_style_all(box);
-    lv_obj_set_size(box, 340, 160);
-    lv_obj_align(box, LV_ALIGN_TOP_MID, 0, 156);
-    lv_obj_set_scroll_dir(box, LV_DIR_VER);
-    lv_obj_set_scrollbar_mode(box, LV_SCROLLBAR_MODE_OFF);
-    s_ace_text = label(box, &lv_font_montserrat_20, COL_WHITE);
-    lv_obj_set_width(s_ace_text, 340);
-    lv_label_set_long_mode(s_ace_text, LV_LABEL_LONG_WRAP);
-    lv_obj_set_style_text_align(s_ace_text, LV_TEXT_ALIGN_CENTER, 0);
-    lv_label_set_text(s_ace_text, "Hold the button and ask me anything.\n\"Who's in the gym?\"  \"Switch off the office lights\"");
-
-    s_ace_status = label(p, &lv_font_montserrat_16, COL_GREY);
-    lv_label_set_text(s_ace_status, "");
-    lv_obj_align(s_ace_status, LV_ALIGN_BOTTOM_MID, 0, -128);
-
-    /* hold to talk */
-    s_ace_btn = lv_obj_create(p);
-    lv_obj_remove_style_all(s_ace_btn);
-    lv_obj_set_size(s_ace_btn, 220, 72);
-    lv_obj_set_style_radius(s_ace_btn, 36, 0);
-    lv_obj_set_style_bg_opa(s_ace_btn, LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_color(s_ace_btn, lv_color_hex(COL_BLUE), 0);
-    lv_obj_align(s_ace_btn, LV_ALIGN_BOTTOM_MID, 0, -40);
-    lv_obj_remove_flag(s_ace_btn, LV_OBJ_FLAG_GESTURE_BUBBLE);   /* a wobble while holding isn't a swipe */
-    lv_obj_add_event_cb(s_ace_btn, ace_btn_cb, LV_EVENT_PRESSED, NULL);
-    lv_obj_add_event_cb(s_ace_btn, ace_btn_cb, LV_EVENT_RELEASED, NULL);
-    lv_obj_add_event_cb(s_ace_btn, ace_btn_cb, LV_EVENT_PRESS_LOST, NULL);
-    s_ace_lbl = label(s_ace_btn, &lv_font_montserrat_20, COL_DARK);
-    lv_label_set_text(s_ace_lbl, LV_SYMBOL_AUDIO "  HOLD TO TALK");
-    lv_obj_center(s_ace_lbl);
-
-    s_ace_state_shown = -1;
-    s_ace_rev_shown = g_ace_rev;
-    if (g_ace_state == ACE_DONE || g_ace_state == ACE_ERR) s_ace_rev_shown = g_ace_rev - 1;   /* show the last answer */
-    net_warm_up();     /* connect now, so talking starts straight away */
-}
-
-static void tick_ace(void)
-{
-    if (!s_ace_btn) return;
-    int st = g_ace_state;
-    if (st != s_ace_state_shown) {
-        s_ace_state_shown = st;
-        bool busy = st == ACE_CONNECT || st == ACE_LISTEN || st == ACE_THINK;
-        lv_obj_set_style_bg_color(s_ace_btn, lv_color_hex(st == ACE_LISTEN ? COL_YELLOW : busy ? COL_TRACK : COL_BLUE), 0);
-        lv_obj_set_style_text_color(s_ace_lbl, lv_color_hex(busy && st != ACE_LISTEN ? COL_GREY : COL_DARK), 0);
-        lv_label_set_text(s_ace_lbl, st == ACE_LISTEN ? LV_SYMBOL_AUDIO "  LISTENING" :
-                                     st == ACE_CONNECT ? LV_SYMBOL_WIFI "  CONNECTING" :
-                                     st == ACE_THINK ? "THINKING..." : LV_SYMBOL_AUDIO "  HOLD TO TALK");
-        lv_label_set_text(s_ace_status, st == ACE_LISTEN ? "Let go when you're done" :
-                                        st == ACE_CONNECT ? "Keep holding..." : "");
-    }
-    if (s_ace_rev_shown != g_ace_rev) {
-        s_ace_rev_shown = g_ace_rev;
-        if (g_ace_heard[0]) lv_label_set_text_fmt(s_ace_text, "\"%s\"\n\n%s", g_ace_heard, g_ace_reply);
-        else lv_label_set_text(s_ace_text, g_ace_reply);
-        lv_obj_set_style_text_color(s_ace_text, lv_color_hex(g_ace_state == ACE_ERR ? COL_GREY : COL_WHITE), 0);
-        lv_obj_scroll_to_y(lv_obj_get_parent(s_ace_text), 0, LV_ANIM_OFF);
-    }
-}
-
 /* ======================= Pages ======================= */
 
 void page_open(int kind, lv_obj_t *scr)
 {
     page_close();
-    static const char *const TITLE[PAGE_COUNT] = { "ACE", "STOPWATCH", "STEPS", "DEVX ALERTS", "SWITCHES", "SETTINGS" };
+    static const char *const TITLE[PAGE_COUNT] = { "STOPWATCH", "STEPS", "DEVX ALERTS", "SWITCHES", "SETTINGS" };
     s_kind = kind;
     s_root = panel(scr, TITLE[kind]);
     s_list = NULL;
     s_status = NULL;
     s_state = -1;
     switch (kind) {
-    case PAGE_ACE:       build_ace(s_root); break;
     case PAGE_STOPWATCH: stopwatch_build(s_root); break;
     case PAGE_STEPS:    build_steps(s_root); break;
     case PAGE_ALERTS:   build_alerts(s_root); break;
@@ -588,8 +491,6 @@ void page_close(void)
     s_list = NULL;
     s_status = NULL;
     s_gate_btn = NULL;
-    s_ace_btn = NULL;
-    g_ace_hold = false;
     s_kind = -1;
 }
 
@@ -598,7 +499,6 @@ void page_tick(void)
     switch (s_kind) {
     case PAGE_ALERTS:   tick_alerts(); break;
     case PAGE_SWITCHES: tick_switches(); break;
-    case PAGE_ACE:      tick_ace(); break;
     default: break;
     }
 }

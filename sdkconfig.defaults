@@ -57,3 +57,7 @@ CONFIG_MBEDTLS_DYNAMIC_FREE_CA_CERT=y
 # Board package: return errors instead of crashing the whole watch (the speaker set-up
 # crashed the watch when it hit a small error)
 CONFIG_BSP_ERROR_CHECK=n
+
+# Rest mode: the watch peeks at the motion sensor every few seconds from deep sleep;
+# skip re-checking the whole app image on each peek (much shorter wake-ups)
+CONFIG_BOOTLOADER_SKIP_VALIDATE_IN_DEEP_SLEEP=y

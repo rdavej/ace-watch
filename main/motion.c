@@ -21,6 +21,7 @@
 #undef M_PI /* qmi8658.h defines its own */
 #endif
 #include "qmi8658.h"
+#include "settings.h"
 
 static const char *TAG = "motion";
 
@@ -39,6 +40,9 @@ volatile bool g_wrist_down = false;
 step_day_t g_step_history[STEP_HISTORY_DAYS];
 
 static qmi8658_dev_t s_imu;
+static bool s_imu_ok;
+static volatile int64_t s_last_move_ms;   /* last time the watch moved at all (rest mode) */
+static float s_rest_g[3] = {0, 0, 1000};  /* slow average of gravity */
 static int s_day = -1; /* day the steps belong to */
 
 /* Learned "looking at the watch" direction of gravity (unit vector) */
@@ -162,6 +166,11 @@ static void motion_task(void *arg)
         if (qmi8658_read_accel(&s_imu, &a[0], &a[1], &a[2]) != ESP_OK) continue;
         float mag = __builtin_sqrtf(dot3(a, a));
 
+        /* ----- Lying still? (rest mode) ----- */
+        float dv[3] = {a[0] - s_rest_g[0], a[1] - s_rest_g[1], a[2] - s_rest_g[2]};
+        if (dot3(dv, dv) > 60.0f * 60.0f) s_last_move_ms = now_ms;
+        for (int i = 0; i < 3; i++) s_rest_g[i] += 0.05f * (a[i] - s_rest_g[i]);
+
         /* ----- Steps ----- */
         smooth += 0.5f * (mag - smooth);
         avg += 0.04f * (smooth - avg);
@@ -220,19 +229,22 @@ static void motion_task(void *arg)
         down_samples = (c < 0.4f) ? down_samples + 1 : 0;
         g_wrist_down = down_samples >= 38;
 
-        if (c < 0.55f) {                 /* > ~57 degrees away: arm down / sideways */
+        /* Stricter since v0.6 (it woke while driving): the arm must really be down
+           (> ~63 degrees away) for ~0.8 s, come up into view within 1 s, and then
+           be held steady in view for ~0.3 s. Can be switched off in the quick panel. */
+        if (c < 0.45f) {
             view_samples = 0;
-            /* only counts as "arm was down" once held there for ~0.5 s,
-               so small wobbles near the viewing angle don't wake the screen */
-            if (++away_samples >= 12) last_away_ms = now_ms;
-        } else if (c > 0.8f) {
-            away_samples = 0;          /* < ~32 degrees from the viewing position */
+            if (++away_samples >= 20) last_away_ms = now_ms;
+        } else if (c > 0.82f) {
+            away_samples = 0;          /* < ~35 degrees from the viewing position */
             view_samples++;
-            /* moved into view within 1.5 s and held for ~0.2 s */
-            if (view_samples == 3 && (now_ms - last_away_ms) < 1500) {
+            if (view_samples == 8 && still_samples >= 6 && g_set.raise &&
+                (now_ms - last_away_ms) < 1000 + 8 * SAMPLE_MS) {
                 g_raise_to_wake = true;
                 motion_on_raise();   /* wake the screen right now, no waiting */
             }
+        } else {
+            away_samples = 0;
         }
 
         /* Learn the viewing position after a tap-to-wake */
@@ -270,9 +282,24 @@ static void motion_task(void *arg)
     }
 }
 
+uint32_t motion_still_ms(void)
+{
+    if (!s_imu_ok) return 0;
+    return (uint32_t)(esp_timer_get_time() / 1000 - s_last_move_ms);
+}
+
+void motion_gravity(float g[3]) { memcpy(g, s_rest_g, sizeof(s_rest_g)); }
+
+void motion_save_now(void)
+{
+    steps_check_day();
+    steps_save();
+}
+
 void motion_start(void)
 {
     motion_load();
+    s_last_move_ms = esp_timer_get_time() / 1000;
 
     if (bsp_i2c_init() != ESP_OK ||
         qmi8658_init(&s_imu, bsp_i2c_get_handle(), QMI8658_ADDRESS_HIGH) != ESP_OK) {
@@ -284,6 +311,7 @@ void motion_start(void)
     qmi8658_set_accel_odr(&s_imu, QMI8658_ACCEL_ODR_31_25HZ);
     qmi8658_set_accel_unit_mps2(&s_imu, false);      /* readings in mg */
 
+    s_imu_ok = true;
     xTaskCreate(motion_task, "motion", 4096, NULL, 4, NULL);
     ESP_LOGI(TAG, "Motion sensor running, %lu steps today", (unsigned long)g_steps_today);
 }

@@ -176,6 +176,8 @@ static void end_cb(lv_event_t *e)
 
 int workout_sets(void) { return s_set_count; }
 
+bool workout_busy(void) { return s_start_us != 0 || s_rest_end_us != 0; }
+
 bool workout_tick(void)
 {
     bool finished = false;

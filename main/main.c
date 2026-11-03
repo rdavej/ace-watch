@@ -33,6 +33,7 @@
 #include "workout.h"
 #include "sound.h"
 #include "pages.h"
+#include "rest.h"
 #include "settings.h"
 #include "stopwatch.h"
 
@@ -40,6 +41,7 @@ LV_FONT_DECLARE(font_time_86);
 LV_IMAGE_DECLARE(img_devx_logo_big);
 LV_IMAGE_DECLARE(img_devx_logo_small);
 LV_IMAGE_DECLARE(img_ace_small);
+LV_IMAGE_DECLARE(img_people);
 
 static const char *TAG = "ace_watch";
 
@@ -171,6 +173,8 @@ static lv_obj_t *s_steps;
 static lv_obj_t *s_ring;          /* steps ring around the face */
 static lv_obj_t *s_sets_lbl, *s_alerts_lbl;
 static lv_obj_t *s_gate_pill, *s_gate_lbl;
+static lv_obj_t *s_gym_pill, *s_gym_lbl, *s_alert_bar;   /* in gym now; alerts waiting */
+static char s_gym_buf[8];
 static uint32_t s_gate_armed_at, s_gate_shown_at;   /* tap once = armed (3 s), result shown 4 s */
 static bool s_gate_wait;
 static void gate_pill_tick(void);
@@ -252,11 +256,20 @@ static void update_clock(void)
     } else {
         lv_obj_add_flag(s_sets_lbl, LV_OBJ_FLAG_HIDDEN);
     }
+    /* alerts waiting: a small bar at the very bottom with the count */
     if (s_unread) {
-        label_printf(s_alerts_lbl, s_alerts_buf, sizeof(s_alerts_buf), "%d ALERT%s", s_unread, s_unread == 1 ? "" : "S");
-        lv_obj_remove_flag(s_alerts_lbl, LV_OBJ_FLAG_HIDDEN);
+        label_printf(s_alerts_lbl, s_alerts_buf, sizeof(s_alerts_buf), "%d", s_unread);
+        lv_obj_remove_flag(s_alert_bar, LV_OBJ_FLAG_HIDDEN);
     } else {
-        lv_obj_add_flag(s_alerts_lbl, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_alert_bar, LV_OBJ_FLAG_HIDDEN);
+    }
+    /* members training at the gym right now (from DevX, each sync) */
+    int in_gym = g_in_gym;
+    if (in_gym >= 0 && net_has_key()) {
+        label_printf(s_gym_lbl, s_gym_buf, sizeof(s_gym_buf), "%d", in_gym);
+        lv_obj_remove_flag(s_gym_pill, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(s_gym_pill, LV_OBJ_FLAG_HIDDEN);
     }
     gate_pill_tick();
 }
@@ -528,8 +541,8 @@ static void screen_on(void)
     s_wake_quiet = false;
 }
 
-/* Screens, swipe left / right: Face -> Ace -> Workout -> Stopwatch -> Steps -> Alerts -> Switches -> Settings */
-enum { PG_FACE, PG_ACE, PG_WORKOUT, PG_STOPWATCH, PG_STEPS, PG_ALERTS, PG_SWITCHES, PG_SETTINGS, PG_N };
+/* Screens, swipe left / right: Face -> Workout -> Stopwatch -> Steps -> Alerts -> Switches -> Settings */
+enum { PG_FACE, PG_WORKOUT, PG_STOPWATCH, PG_STEPS, PG_ALERTS, PG_SWITCHES, PG_SETTINGS, PG_N };
 static int s_page = PG_FACE;
 static void nav_go(int pg);
 static bool banner_check(void);
@@ -548,13 +561,15 @@ void motion_on_raise(void)
     bsp_display_unlock();
 }
 
+#define REST_AFTER_MS      (10 * 60 * 1000)   /* still this long, screen off -> rest */
+#define REST_AFTER_BUSY_MS (60 * 60 * 1000)   /* a workout was started and left going */
+
 static void power_timer_cb(lv_timer_t *t)
 {
     (void)t;
     diag_ui_alive();   /* tell the freeze guard the screen task is running */
     uint32_t now = lv_tick_get();
-    bool keep_on = g_net_state == NET_SETUP || g_net_state == NET_UPDATING ||
-                   g_ace_state == ACE_CONNECT || g_ace_state == ACE_LISTEN || g_ace_state == ACE_THINK;
+    bool keep_on = g_net_state == NET_SETUP || g_net_state == NET_UPDATING;
 
     /* Palm: check while the screen is on, and while covered (to see it lift) */
     if (s_screen_on || s_palm_down) {
@@ -613,6 +628,20 @@ static void power_timer_cb(lv_timer_t *t)
         if (!s_screen_on && !s_palm_down) {
             s_wake_by_raise = true;
             lv_display_trigger_activity(NULL);
+        }
+    }
+
+    /* Rest mode: lying still with the screen dark (on the table, overnight) -> deep sleep
+       until it's picked up. Not while charging, timing something, or busy online. */
+    if (!s_screen_on && !s_palm_down && !keep_on) {
+        uint32_t still = motion_still_ms();
+        bool net_busy = g_net_state == NET_CONNECTING || g_net_state == NET_SYNCING;
+        if (still > (workout_busy() ? REST_AFTER_BUSY_MS : REST_AFTER_MS) && !net_busy &&
+            !s_bat_charging && !usb_plugged() && !stopwatch_running()) {
+            float g[3];
+            motion_gravity(g);
+            motion_save_now();
+            rest_enter(g);           /* returns only if it couldn't */
         }
     }
 
@@ -762,8 +791,7 @@ static void nav_go(int pg)
     if (pg == s_page || pg < 0 || pg >= PG_N) return;
     page_close();
     workout_show(pg == PG_WORKOUT);
-    if (pg == PG_ACE) page_open(PAGE_ACE, lv_screen_active());
-    else if (pg >= PG_STOPWATCH) page_open(PAGE_STOPWATCH + (pg - PG_STOPWATCH), lv_screen_active());
+    if (pg >= PG_STOPWATCH) page_open(PAGE_STOPWATCH + (pg - PG_STOPWATCH), lv_screen_active());
     if (pg == PG_ALERTS) s_unread = 0;
     s_page = pg;
 }
@@ -912,8 +940,8 @@ static bool banner_check(void)
 }
 
 /* ---------- Quick panel: swipe down on the face ---------- */
-static lv_obj_t *s_qp_wifi, *s_qp_bat, *s_qp_bright, *s_qp_sound, *s_qp_live, *s_qp_tmo;
-static char s_qp_wifi_buf[48], s_qp_bat_buf[32], s_qp_bright_buf[24], s_qp_sound_buf[24], s_qp_live_buf[8], s_qp_tmo_buf[8];
+static lv_obj_t *s_qp_wifi, *s_qp_bat, *s_qp_bright, *s_qp_sound, *s_qp_live, *s_qp_tmo, *s_qp_raise;
+static char s_qp_wifi_buf[48], s_qp_bat_buf[32], s_qp_bright_buf[24], s_qp_sound_buf[24], s_qp_live_buf[8], s_qp_tmo_buf[8], s_qp_raise_buf[8];
 
 static void qp_gesture_cb(lv_event_t *e)
 {
@@ -952,6 +980,10 @@ static void qp_tile_cb(lv_event_t *e)
         g_set.timeout = (g_set.timeout + 1) % 3;
         settings_save();
         break;
+    case 6:
+        g_set.raise = !g_set.raise;      /* raise to wake (off while driving) */
+        settings_save();
+        break;
     }
     panel_update();
 }
@@ -960,21 +992,23 @@ static lv_obj_t *qp_tile(lv_obj_t *grid, const char *icon, const char *name, int
 {
     lv_obj_t *t = lv_obj_create(grid);
     lv_obj_remove_style_all(t);
-    lv_obj_set_size(t, 168, 90);
-    lv_obj_set_style_radius(t, 24, 0);
+    lv_obj_set_size(t, 108, 92);
+    lv_obj_set_style_radius(t, 22, 0);
     lv_obj_set_style_bg_color(t, lv_color_hex(0x0A1226), 0);
     lv_obj_set_style_bg_color(t, lv_color_hex(0x16223F), LV_STATE_PRESSED);
     lv_obj_set_style_bg_opa(t, LV_OPA_COVER, 0);
-    lv_obj_set_style_pad_all(t, 12, 0);
+    lv_obj_set_style_pad_all(t, 6, 0);
     lv_obj_set_flex_flow(t, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(t, 2, 0);
+    lv_obj_set_flex_align(t, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(t, 3, 0);
+    lv_obj_add_flag(t, LV_OBJ_FLAG_GESTURE_BUBBLE);    /* a swipe up on a tile still closes the panel */
     lv_obj_add_event_cb(t, qp_tile_cb, LV_EVENT_CLICKED, (void *)(intptr_t)which);
     lv_obj_t *i = make_label(t, &lv_font_montserrat_20, COL_BLUE);
     lv_label_set_text(i, icon);
-    lv_obj_t *n = make_label(t, &lv_font_montserrat_16, COL_WHITE);
+    lv_obj_t *n = make_label(t, &lv_font_montserrat_14, COL_WHITE);
     lv_label_set_text(n, name);
     if (val) {
-        *val = make_label(t, &lv_font_montserrat_16, COL_YELLOW);
+        *val = make_label(t, &lv_font_montserrat_14, COL_YELLOW);
         lv_label_set_text_static(*val, buf);
     }
     return t;
@@ -1007,6 +1041,7 @@ static void panel_update(void)
     label_printf(s_qp_sound, s_qp_sound_buf, sizeof(s_qp_sound_buf), "%s", VO[g_set.volume % 3]);
     label_printf(s_qp_live, s_qp_live_buf, sizeof(s_qp_live_buf), "%s", g_set.live ? "On" : "Off");
     label_printf(s_qp_tmo, s_qp_tmo_buf, sizeof(s_qp_tmo_buf), "%lu s", (unsigned long)(settings_timeout_ms() / 1000));
+    label_printf(s_qp_raise, s_qp_raise_buf, sizeof(s_qp_raise_buf), "%s", g_set.raise ? "On" : "Off");
 }
 
 static void panel_open(void)
@@ -1030,43 +1065,45 @@ static void panel_open(void)
     lv_label_set_text_static(s_qp_bat, s_qp_bat_buf);
     lv_obj_align(s_qp_bat, LV_ALIGN_TOP_MID, 0, 62);
 
-    /* 2 x 2 quick buttons */
+    /* 3 x 3 quick buttons */
     lv_obj_t *grid = lv_obj_create(s_qpanel);
     lv_obj_remove_style_all(grid);
-    lv_obj_set_size(grid, 350, LV_SIZE_CONTENT);
+    lv_obj_set_size(grid, 344, LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_ROW_WRAP);
-    lv_obj_set_style_pad_column(grid, 14, 0);
-    lv_obj_set_style_pad_row(grid, 14, 0);
+    lv_obj_set_style_pad_column(grid, 10, 0);
+    lv_obj_set_style_pad_row(grid, 10, 0);
     lv_obj_remove_flag(grid, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_align(grid, LV_ALIGN_TOP_MID, 0, 96);
-    s_qp_bright_buf[0] = s_qp_sound_buf[0] = s_qp_live_buf[0] = s_qp_tmo_buf[0] = 0;
+    lv_obj_add_flag(grid, LV_OBJ_FLAG_GESTURE_BUBBLE);
+    lv_obj_align(grid, LV_ALIGN_TOP_MID, 0, 92);
+    s_qp_bright_buf[0] = s_qp_sound_buf[0] = s_qp_live_buf[0] = s_qp_tmo_buf[0] = s_qp_raise_buf[0] = 0;
     qp_tile(grid, LV_SYMBOL_REFRESH, "Sync now", 0, NULL, NULL);
     qp_tile(grid, LV_SYMBOL_BELL, "Live alerts", 4, &s_qp_live, s_qp_live_buf);
+    qp_tile(grid, LV_SYMBOL_UP, "Raise wake", 6, &s_qp_raise, s_qp_raise_buf);
     qp_tile(grid, LV_SYMBOL_IMAGE, "Brightness", 1, &s_qp_bright, s_qp_bright_buf);
     qp_tile(grid, LV_SYMBOL_VOLUME_MAX, "Sound", 2, &s_qp_sound, s_qp_sound_buf);
     qp_tile(grid, LV_SYMBOL_EYE_CLOSE, "Screen off", 5, &s_qp_tmo, s_qp_tmo_buf);
     qp_tile(grid, LV_SYMBOL_WIFI, "Wi-Fi setup", 3, NULL, NULL);
 
-    /* close */
+    /* close: swipe up anywhere, or tap the bar at the bottom */
     lv_obj_t *c = lv_obj_create(s_qpanel);
     lv_obj_remove_style_all(c);
-    lv_obj_set_size(c, 180, 50);
-    lv_obj_set_style_radius(c, 25, 0);
-    lv_obj_set_style_border_width(c, 2, 0);
-    lv_obj_set_style_border_color(c, lv_color_hex(COL_TRACK), 0);
-    lv_obj_set_style_bg_color(c, lv_color_hex(0x16223F), LV_STATE_PRESSED);
-    lv_obj_set_style_bg_opa(c, LV_OPA_COVER, LV_STATE_PRESSED);
-    lv_obj_align(c, LV_ALIGN_BOTTOM_MID, 0, -42);
+    lv_obj_set_size(c, 200, 56);
+    lv_obj_add_flag(c, LV_OBJ_FLAG_GESTURE_BUBBLE);
+    lv_obj_align(c, LV_ALIGN_BOTTOM_MID, 0, -4);
     lv_obj_add_event_cb(c, qp_close_cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *cl = make_label(c, &lv_font_montserrat_16, COL_GREY);
-    lv_label_set_text(cl, LV_SYMBOL_UP "  Close");
-    lv_obj_center(cl);
-
-    lv_obj_t *v = make_label(s_qpanel, &lv_font_montserrat_16, COL_GREY);
-    char vb[32];
-    snprintf(vb, sizeof(vb), "Ace Watch v%s", esp_app_get_description()->version);
+    char vb[48];
+    snprintf(vb, sizeof(vb), "swipe up to close  -  v%s", esp_app_get_description()->version);
+    lv_obj_t *v = make_label(c, &lv_font_montserrat_14, COL_GREY);
     lv_label_set_text(v, vb);
-    lv_obj_align(v, LV_ALIGN_BOTTOM_MID, 0, -14);
+    lv_obj_align(v, LV_ALIGN_TOP_MID, 0, 6);
+    lv_obj_t *bar = lv_obj_create(c);
+    lv_obj_remove_style_all(bar);
+    lv_obj_set_size(bar, 44, 4);
+    lv_obj_set_style_radius(bar, 2, 0);
+    lv_obj_set_style_bg_color(bar, lv_color_hex(0x2A3B5E), 0);
+    lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
+    lv_obj_remove_flag(bar, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_align(bar, LV_ALIGN_TOP_MID, 0, 30);
 
     panel_update();
 }
@@ -1212,25 +1249,43 @@ static void build_ui(void)
     lv_obj_remove_style_all(bot);
     lv_obj_set_size(bot, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(bot, LV_FLEX_FLOW_ROW);
-    lv_obj_set_style_pad_column(bot, 18, 0);
+    lv_obj_set_style_pad_column(bot, 14, 0);
     lv_obj_set_flex_align(bot, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_remove_flag(bot, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_align(bot, LV_ALIGN_BOTTOM_MID, 0, -12);
+    lv_obj_align(bot, LV_ALIGN_BOTTOM_MID, 0, -26);
     s_bat_label = make_label(bot, &lv_font_montserrat_16, COL_GREY);
     label_printf(s_bat_label, s_bat_buf, sizeof(s_bat_buf), "%s", "");
     s_sets_lbl = make_label(bot, &lv_font_montserrat_16, COL_BLUE);
     label_printf(s_sets_lbl, s_sets_buf, sizeof(s_sets_buf), "%s", "");
     lv_obj_add_flag(s_sets_lbl, LV_OBJ_FLAG_HIDDEN);
-    s_alerts_lbl = make_label(bot, &lv_font_montserrat_16, COL_YELLOW);
-    label_printf(s_alerts_lbl, s_alerts_buf, sizeof(s_alerts_buf), "%s", "");
-    lv_obj_add_flag(s_alerts_lbl, LV_OBJ_FLAG_HIDDEN);
+
+    /* In gym now: people icon + count */
+    s_gym_pill = lv_obj_create(bot);
+    lv_obj_remove_style_all(s_gym_pill);
+    lv_obj_set_size(s_gym_pill, LV_SIZE_CONTENT, 36);
+    lv_obj_set_style_pad_hor(s_gym_pill, 12, 0);
+    lv_obj_set_style_pad_column(s_gym_pill, 6, 0);
+    lv_obj_set_style_radius(s_gym_pill, 18, 0);
+    lv_obj_set_style_bg_color(s_gym_pill, lv_color_hex(0x0A1226), 0);
+    lv_obj_set_style_bg_opa(s_gym_pill, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(s_gym_pill, 1, 0);
+    lv_obj_set_style_border_color(s_gym_pill, lv_color_hex(0x13203D), 0);
+    lv_obj_set_flex_flow(s_gym_pill, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(s_gym_pill, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_remove_flag(s_gym_pill, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_t *ppl = lv_image_create(s_gym_pill);
+    lv_image_set_src(ppl, &img_people);
+    s_gym_lbl = make_label(s_gym_pill, &lv_font_montserrat_16, COL_YELLOW);
+    s_gym_buf[0] = 0;
+    lv_label_set_text_static(s_gym_lbl, s_gym_buf);
+    lv_obj_add_flag(s_gym_pill, LV_OBJ_FLAG_HIDDEN);
 
     /* Gate pill, at the end of the bottom row (only when the watch key is set) */
     s_gate_pill = lv_obj_create(bot);
     lv_obj_remove_style_all(s_gate_pill);
-    lv_obj_set_size(s_gate_pill, LV_SIZE_CONTENT, 40);
-    lv_obj_set_style_pad_hor(s_gate_pill, 18, 0);
-    lv_obj_set_style_radius(s_gate_pill, 20, 0);
+    lv_obj_set_size(s_gate_pill, LV_SIZE_CONTENT, 36);
+    lv_obj_set_style_pad_hor(s_gate_pill, 16, 0);
+    lv_obj_set_style_radius(s_gate_pill, 18, 0);
     lv_obj_set_style_bg_opa(s_gate_pill, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(s_gate_pill, 1, 0);
     lv_obj_set_style_border_color(s_gate_pill, lv_color_hex(0x13203D), 0);
@@ -1242,6 +1297,25 @@ static void build_ui(void)
     lv_obj_center(s_gate_lbl);
     lv_obj_add_flag(s_gate_pill, LV_OBJ_FLAG_HIDDEN);
     gate_pill_idle();
+
+    /* Alerts waiting: small bar + count at the very bottom */
+    s_alert_bar = lv_obj_create(scr);
+    lv_obj_remove_style_all(s_alert_bar);
+    lv_obj_set_size(s_alert_bar, LV_SIZE_CONTENT, 16);
+    lv_obj_set_flex_flow(s_alert_bar, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(s_alert_bar, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(s_alert_bar, 6, 0);
+    lv_obj_remove_flag(s_alert_bar, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_t *hb = lv_obj_create(s_alert_bar);
+    lv_obj_remove_style_all(hb);
+    lv_obj_set_size(hb, 44, 4);
+    lv_obj_set_style_radius(hb, 2, 0);
+    lv_obj_set_style_bg_color(hb, lv_color_hex(COL_BLUE), 0);
+    lv_obj_set_style_bg_opa(hb, LV_OPA_COVER, 0);
+    s_alerts_lbl = make_label(s_alert_bar, &lv_font_montserrat_14, COL_YELLOW);
+    label_printf(s_alerts_lbl, s_alerts_buf, sizeof(s_alerts_buf), "%s", "");
+    lv_obj_align(s_alert_bar, LV_ALIGN_BOTTOM_MID, 0, -6);
+    lv_obj_add_flag(s_alert_bar, LV_OBJ_FLAG_HIDDEN);
 
     /* Workout screen (swipe left) */
     workout_build(scr);
@@ -1341,7 +1415,8 @@ static void build_ui(void)
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "Ace Watch v%s starting", esp_app_get_description()->version);
+    bool from_rest = rest_wake_check();   /* resting and not moved: straight back to sleep */
+    ESP_LOGI(TAG, "Ace Watch v%s starting%s", esp_app_get_description()->version, from_rest ? " (picked up)" : "");
     diag_boot();   /* black box: why did we restart last time? */
 
     /* Power saving: slow the CPU down and nap between jobs when idle */
@@ -1377,7 +1452,7 @@ void app_main(void)
     bsp_display_lock(0);
     build_ui();
     /* Logo on a normal start; skip it after a crash/freeze so the watch is back fast */
-    if (!g_diag_boot_msg[0]) build_splash();
+    if (!g_diag_boot_msg[0] && !from_rest) build_splash();
     s_boot_msg_until = lv_tick_get() + 60000;   /* 1 min, so it can be seen */
     lv_refr_now(NULL);   /* draw the full first frame before Wi-Fi starts */
     bsp_display_unlock();

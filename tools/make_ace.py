@@ -1,7 +1,7 @@
 """Turns tools/assets/ace-icon.png (the Ace app icon) into main/img_ace.c (LVGL RGB565 images).
 
 The shield is cut out of the navy background (transparent around it), so it sits
-on the black screen and on the pop-up card. Two sizes: the Ace screen and the pop-up card.
+on the black screen and on the pop-up card. Used on the notification pop-up card.
 """
 from PIL import Image, ImageDraw
 
@@ -36,7 +36,7 @@ const lv_image_dsc_t {name} = {{
 
 SRC = "tools/assets/ace-icon.png"
 OUT = "main/img_ace.c"
-SIZES = {"img_ace_big": 96, "img_ace_small": 48}   # height in pixels
+SIZES = {"img_ace_small": 48}   # height in pixels (the pop-up card)
 CROP = (116, 104, 396, 420)
 
 def cut_out():

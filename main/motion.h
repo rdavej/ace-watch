@@ -28,5 +28,12 @@ extern volatile bool g_wrist_down;
 /* Provided by main.c: called from the motion task the moment a raise is seen */
 void motion_on_raise(void);
 
+/* How long the watch has been lying completely still (0 if the sensor isn't working) */
+uint32_t motion_still_ms(void);
+/* Which way gravity points (mg), averaged */
+void motion_gravity(float g[3]);
+/* Save today's steps now (before resting) */
+void motion_save_now(void);
+
 /* Start the motion sensor task (call after the display/I2C is up) */
 void motion_start(void);

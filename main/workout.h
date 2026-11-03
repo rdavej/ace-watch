@@ -18,3 +18,6 @@ bool workout_tick(void);
 
 /* Sets done in the current workout (shown on the watch face) */
 int workout_sets(void);
+
+/* A workout is going (started, or a rest is counting down) */
+bool workout_busy(void);
