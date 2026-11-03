@@ -229,17 +229,17 @@ static void motion_task(void *arg)
         down_samples = (c < 0.4f) ? down_samples + 1 : 0;
         g_wrist_down = down_samples >= 38;
 
-        /* Stricter since v0.6 (it woke while driving): the arm must really be down
-           (> ~63 degrees away) for ~0.8 s, come up into view within 1 s, and then
-           be held steady in view for ~0.3 s. Can be switched off in the quick panel. */
-        if (c < 0.45f) {
+        /* v0.7.3: between the jumpy v0.5 and the too-strict v0.6: the arm down (> ~60 degrees
+           away) for ~0.5 s, up into view within 1.5 s, then held fairly steady for ~0.2 s.
+           Can be switched off in the quick panel (driving). */
+        if (c < 0.5f) {
             view_samples = 0;
-            if (++away_samples >= 20) last_away_ms = now_ms;
-        } else if (c > 0.82f) {
-            away_samples = 0;          /* < ~35 degrees from the viewing position */
+            if (++away_samples >= 12) last_away_ms = now_ms;
+        } else if (c > 0.8f) {
+            away_samples = 0;          /* < ~37 degrees from the viewing position */
             view_samples++;
-            if (view_samples == 8 && still_samples >= 6 && g_set.raise &&
-                (now_ms - last_away_ms) < 1000 + 8 * SAMPLE_MS) {
+            if (view_samples == 5 && still_samples >= 3 && g_set.raise &&
+                (now_ms - last_away_ms) < 1500 + 5 * SAMPLE_MS) {
                 g_raise_to_wake = true;
                 motion_on_raise();   /* wake the screen right now, no waiting */
             }
