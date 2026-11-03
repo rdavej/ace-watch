@@ -377,8 +377,24 @@ static int version_cmp(const char *a, const char *b)
     return 0;
 }
 
+static void devx_close(void);
+static void local_alert(const char *title, const char *body);
+static bool s_ota_told;             /* say once per start-up when an update can't install */
+
+static void ota_problem(const char *what, int err, int status)
+{
+    ESP_LOGW(TAG, "%s (err %d, HTTP %d, free %u)", what, err, status, (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT));
+    if (s_ota_told) return;
+    s_ota_told = true;
+    char b[100];
+    snprintf(b, sizeof(b), "%s (code %d/%d, %uK free). It tries again at the next sync; or use the laptop.",
+             what, err, status, (unsigned)(heap_caps_get_free_size(MALLOC_CAP_8BIT) / 1024));
+    local_alert("Update didn't install", b);
+}
+
 static void ota_check(void)
 {
+    devx_close();                   /* free the DevX connection's memory first: GitHub needs its own */
     rxbuf_t rx = {0};
     esp_http_client_config_t vc = {
         .url = FW_BASE_URL "version.txt",
@@ -397,7 +413,7 @@ static void ota_check(void)
     esp_http_client_cleanup(c);
 
     if (err != ESP_OK || status != 200) {
-        ESP_LOGW(TAG, "Update check failed (err %d, HTTP %d)", err, status);
+        ota_problem("Couldn't check for updates", err, status);
         return;
     }
     rx.buf[rx.len] = 0;
@@ -418,12 +434,16 @@ static void ota_check(void)
         .max_redirection_count = 5,
     };
     esp_https_ota_config_t oc = { .http_config = &bc };
-    if (esp_https_ota(&oc) == ESP_OK) {
+    ESP_LOGI(TAG, "Downloading %s (free %u, largest %u)", rx.buf, (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+    esp_err_t oe = esp_https_ota(&oc);
+    if (oe == ESP_OK) {
         ESP_LOGI(TAG, "Update installed, restarting");
         vTaskDelay(pdMS_TO_TICKS(500));
         esp_restart();
     }
-    ESP_LOGE(TAG, "Update failed");
+    g_net_state = NET_SYNCING;
+    ota_problem("Download stopped", oe, 0);
 }
 
 /* ---------------- DevX server ---------------- */
