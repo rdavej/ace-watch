@@ -41,6 +41,7 @@ typedef struct {
 } rest_rtc_t;
 
 static RTC_DATA_ATTR rest_rtc_t s_rest;
+static int s_last_minutes = 0, s_last_bat = -1;   /* the rest that just ended */
 
 static void sleep_now(void)
 {
@@ -106,7 +107,6 @@ bool rest_wake_check(void)
     return true;
 }
 
-static int s_last_minutes = 0, s_last_bat = -1;
 int rest_minutes(void) { return s_last_minutes; }
 int rest_battery_before(void) { return s_last_bat; }
 
