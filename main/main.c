@@ -571,7 +571,7 @@ void motion_on_raise(void)
     bsp_display_unlock();
 }
 
-#define REST_AFTER_MS      (10 * 60 * 1000)   /* still this long, screen off -> rest */
+#define REST_AFTER_MS      (5 * 60 * 1000)    /* still this long, screen off -> rest */
 #define REST_AFTER_BUSY_MS (60 * 60 * 1000)   /* a workout was started and left going */
 
 static void power_timer_cb(lv_timer_t *t)
@@ -645,7 +645,9 @@ static void power_timer_cb(lv_timer_t *t)
 
     /* Rest mode: lying still with the screen dark (on the table, overnight) -> deep sleep
        until it's picked up. Not while charging, timing something, or busy online. */
-    if (!s_screen_on && !s_palm_down && !keep_on) {
+    /* (also when lying face-down: that looked like a palm over the screen, so it never rested
+       and kept checking the touch chip all night - v0.7.8) */
+    if (!s_screen_on && !keep_on) {
         uint32_t still = motion_still_ms();
         bool net_busy = g_net_state == NET_CONNECTING || g_net_state == NET_SYNCING;
         if (still > (workout_busy() ? REST_AFTER_BUSY_MS : REST_AFTER_MS) && !net_busy &&
@@ -653,7 +655,8 @@ static void power_timer_cb(lv_timer_t *t)
             float g[3];
             motion_gravity(g);
             motion_save_now();
-            rest_enter(g);           /* returns only if it couldn't */
+            bool chg = false;
+            rest_enter(g, battery_percent(&chg));   /* returns only if it couldn't */
         }
     }
 
@@ -1498,6 +1501,16 @@ void app_main(void)
     pmu_init();
     motion_start();
     sound_start();
+
+    /* Picked up after resting: say how long and what it cost (shown on the face for a minute) */
+    if (from_rest && !g_diag_boot_msg[0]) {
+        bool chg = false;
+        int now_pct = battery_percent(&chg), before = rest_battery_before(), m = rest_minutes();
+        if (before >= 0 && now_pct >= 0)
+            snprintf(g_diag_boot_msg, sizeof(g_diag_boot_msg), "Rested %dh %02dm, battery %d%% -> %d%%", m / 60, m % 60, before, now_pct);
+        else
+            snprintf(g_diag_boot_msg, sizeof(g_diag_boot_msg), "Rested %dh %02dm", m / 60, m % 60);
+    }
 
     diag_phase("UI");
     bsp_display_lock(0);

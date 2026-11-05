@@ -37,6 +37,7 @@ typedef struct {
     uint32_t magic;
     float g[3];                   /* which way gravity pointed when it went to rest */
     uint32_t peeks;
+    int32_t bat;                  /* battery % when it went to rest */
 } rest_rtc_t;
 
 static RTC_DATA_ATTR rest_rtc_t s_rest;
@@ -99,16 +100,23 @@ bool rest_wake_check(void)
     gpio_hold_dis(PA_GPIO);
     ESP_LOGI(TAG, "Picked up after %lu checks (~%lu min resting)",
              (unsigned long)s_rest.peeks, (unsigned long)(s_rest.peeks * REST_PEEK_S / 60));
+    s_last_minutes = (int)(s_rest.peeks * REST_PEEK_S / 60);
+    s_last_bat = s_rest.bat;
     s_rest.magic = 0;
     return true;
 }
 
-void rest_enter(const float gravity[3])
+static int s_last_minutes = 0, s_last_bat = -1;
+int rest_minutes(void) { return s_last_minutes; }
+int rest_battery_before(void) { return s_last_bat; }
+
+void rest_enter(const float gravity[3], int battery_pct)
 {
     float m = sqrtf(gravity[0] * gravity[0] + gravity[1] * gravity[1] + gravity[2] * gravity[2]);
     if (m < 1.0f) return;
     for (int i = 0; i < 3; i++) s_rest.g[i] = gravity[i] / m;
     s_rest.peeks = 0;
+    s_rest.bat = battery_pct;
     s_rest.magic = REST_MAGIC;
     ESP_LOGI(TAG, "Lying still: resting until picked up");
 

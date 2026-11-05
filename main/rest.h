@@ -13,4 +13,8 @@
 bool rest_wake_check(void);
 
 /* Go to rest now (call with the screen off). Never returns. */
-void rest_enter(const float gravity[3]);
+void rest_enter(const float gravity[3], int battery_pct);
+
+/* After a wake from rest: how long it rested and the battery when it went to rest (-1 = unknown) */
+int rest_minutes(void);
+int rest_battery_before(void);

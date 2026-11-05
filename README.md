@@ -7,7 +7,7 @@ DevX / Ace firmware for the Waveshare ESP32-C6-Touch-AMOLED-2.06 (410 × 502 AMO
 - **Logo Core face (v0.7):** a dark wallpaper like the DevX website (faint 20 KG / 10 KG plates and circuit lines; `tools/make_wallpaper.py` draws it, with the logo, glow and ring track baked in), date and big time on top, the real DevX logo (round, with its blue glow) in the middle with today's steps as a yellow ring around it (turns blue at the 8,000 goal); pills underneath: steps · 👥 visits today · RM collected today (both from DevX at each sync, devx-gym-backend PR #262) · gate icon (tap twice); very bottom: battery, sets / stopwatch, and a small bar + count when DevX alerts are waiting. Status text (syncing, offline, last restart) shows between the time and the ring only when there's news
 - **Ace pop-up:** a new DevX notification slides up over the face as an Ace card (Dismiss / Open) with a ding and lights the screen
 - Step counter (QMI8658): counts once 8 evenly spaced steps arrive at walking/running pace; ignores sharp jolts (combing, waving). Saved, resets at midnight, last 7 days kept
-- Raise to wake: learns your viewing angle from tap-to-wake, then wakes when you lift your wrist into it (arm down ~0.5 s first, up within 1.5 s, held fairly steady for a moment). **Raise wake** tile in the pull-down panel turns it off (driving). Lower the wrist again and a raise-woken screen turns off after ~2 s
+- Raise to wake: learns your viewing angle from tap-to-wake, then wakes when you lift your wrist into it (arm down ~0.3 s first, up within 2 s, held for a moment). **Raise wake** tile in the pull-down panel turns it off (driving). Lower the wrist again and a raise-woken screen turns off after ~2 s
 - Palm cover: cover the screen with your palm to turn it off straight away
 - **Workout screen (swipe left, swipe right to go back):** rest ring countdown, presets 60 s / 90 s / 2 min, big SET DONE button (adds a set + starts rest), workout clock. Beeps at 3-2-1, rest over → three beeps and the screen lights up yellow "GO!". Tap the ring twice while resting to skip the rest. END (tap twice) stops the workout clock and shows the total
 - **Swipe left through:** Face → Workout → Stopwatch → Steps → Switches → Settings (swipe right to go back)
@@ -29,7 +29,7 @@ DevX / Ace firmware for the Waveshare ESP32-C6-Touch-AMOLED-2.06 (410 × 502 AMO
 - Low battery: red under 15%, "Charge me" under 5%
 - Charging screen: barbell loading plates (more plates = more charge)
 - Battery saving: slower CPU and no redraws while dark, 25 Hz motion
-- **Rest mode:** lying still with the screen dark for 10 min (1 h if a workout is going; never while charging or the stopwatch runs) → deep sleep: screen and touch asleep, Wi-Fi off, only a peek at the motion sensor every 6 s. Pick it up (or plug in the charger) and it's back in a few seconds and syncs DevX straight away
+- **Rest mode:** lying still with the screen dark for 5 min (face up or face down) (1 h if a workout is going; never while charging or the stopwatch runs) → deep sleep: screen and touch asleep, Wi-Fi off, only a peek at the motion sensor every 6 s. Pick it up (or plug in the charger) and it's back in a few seconds and syncs DevX straight away
 - Screen off after 20 s, tap to wake
 - Black box: remembers why it last restarted (crash, freeze, power dip, watchdog) and what it was doing; shows "Last restart: …" for 15 s after boot. Freeze guard restarts the watch if the screen task stops for 10 s
 - Sync shows each step in the footer (Wi-Fi → Time → Update)

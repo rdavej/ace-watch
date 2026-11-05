@@ -69,7 +69,8 @@ static EventGroupHandle_t s_ev;
 #define EV_SAVED      BIT3
 #define EV_JOB        BIT4
 #define EV_SYNC       BIT5
-#define OFFLINE_RETRY_MS (5 * 60 * 1000)   /* out of Wi-Fi range: try again sooner */
+#define OFFLINE_RETRY_MS (5 * 60 * 1000)   /* out of Wi-Fi range: try again sooner (then back off) */
+static int s_offline_n;                    /* syncs in a row with no Wi-Fi */
 #define LIVE_POLL_MS     60000              /* Live alerts: check DevX every minute */
 #define LIVE_RETRY_MS    (5 * 60 * 1000)    /* Live alerts, no Wi-Fi: look again in 5 min */
 
@@ -1350,6 +1351,7 @@ static void net_task(void *arg)
                 job_feed();
                 job_steps();
             }
+            s_offline_n = 0;
             if (live_on(true)) {
                 s_wifi_up = true;                   /* stay connected for Live alerts */
                 next_live_us = esp_timer_get_time() + (int64_t)LIVE_POLL_MS * 1000;
@@ -1363,7 +1365,11 @@ static void net_task(void *arg)
             diag_phase("Wi-Fi off");
             wifi_off();
             g_net_state = NET_OFFLINE;
-            next_sync_us = esp_timer_get_time() + (int64_t)OFFLINE_RETRY_MS * 1000;
+            /* out of range: try again in 5, 10, 20, then 30 min (each try scans for ~10 s) */
+            int64_t wait = (int64_t)OFFLINE_RETRY_MS << (s_offline_n < 3 ? s_offline_n : 3);
+            if (wait > 30LL * 60 * 1000) wait = 30LL * 60 * 1000;
+            s_offline_n++;
+            next_sync_us = esp_timer_get_time() + wait * 1000;
         }
         diag_phase("idle");
     }
