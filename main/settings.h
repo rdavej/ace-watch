@@ -10,6 +10,11 @@ typedef struct {
     uint8_t raise;     /* 1 = raise to wake on (turn off while driving) */
     uint8_t sync;      /* normal sync every 0: 5 min, 1: 10 min, 2: 30 min */
     char live_ssid[33];/* "On my hotspot": the network Live alerts are on for */
+    /* Helmet HUD (v0.8.0) */
+    uint8_t hud_flip;  /* bit 0 up-down, bit 1 left-right */
+    uint8_t hud_r;     /* radius of the round area under the lens, px */
+    int16_t hud_dx;    /* its centre, from the middle of the screen */
+    int16_t hud_dy;
 } settings_t;
 
 extern settings_t g_set;

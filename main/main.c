@@ -28,6 +28,7 @@
 #include "esp_heap_caps.h"
 #include "esp_pm.h"
 #include "net.h"
+#include "hud.h"
 #include "motion.h"
 #include "diag.h"
 #include "workout.h"
@@ -559,6 +560,13 @@ static bool banner_check(void);
 
 /* Called from the motion task: light the screen straight away instead of
    waiting for the next screen-timer tick (that wait made raise-to-wake feel slow) */
+/* for the helmet HUD */
+int watch_battery(void)
+{
+    bool chg = false;
+    return battery_percent(&chg);
+}
+
 void motion_on_raise(void)
 {
     if (s_screen_on || s_palm_down) return;
@@ -579,7 +587,7 @@ static void power_timer_cb(lv_timer_t *t)
     (void)t;
     diag_ui_alive();   /* tell the freeze guard the screen task is running */
     uint32_t now = lv_tick_get();
-    bool keep_on = g_net_state == NET_SETUP || g_net_state == NET_UPDATING || wifi_ui_busy();
+    bool keep_on = g_net_state == NET_SETUP || g_net_state == NET_UPDATING || wifi_ui_busy() || hud_is_open();
     wifi_ui_tick();
     alerts_ui_tick();
 

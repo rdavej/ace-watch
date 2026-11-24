@@ -18,6 +18,7 @@
 #include "settings.h"
 #include "sound.h"
 #include "stopwatch.h"
+#include "hud.h"
 
 #define COL_BG      0x000000
 #define COL_BLUE    0x3FB8FF
@@ -437,6 +438,12 @@ static void opt_cb(lv_event_t *e)
     style_opts();
 }
 
+static void hud_btn_cb(lv_event_t *e)
+{
+    (void)e;
+    hud_open();
+}
+
 static void build_settings(lv_obj_t *p)
 {
     static const char *const ROW[3] = { LV_SYMBOL_IMAGE "  Brightness", LV_SYMBOL_VOLUME_MAX "  Sound", LV_SYMBOL_EYE_CLOSE "  Screen off after" };
@@ -466,13 +473,28 @@ static void build_settings(lv_obj_t *p)
     }
     style_opts();
 
+    /* Helmet HUD mode (v0.8.0) */
+    lv_obj_t *hb = lv_obj_create(p);
+    lv_obj_remove_style_all(hb);
+    lv_obj_set_size(hb, 240, 48);
+    lv_obj_align(hb, LV_ALIGN_TOP_MID, 0, 370);
+    lv_obj_set_style_radius(hb, 24, 0);
+    lv_obj_set_style_border_width(hb, 2, 0);
+    lv_obj_set_style_border_color(hb, lv_color_hex(COL_BLUE), 0);
+    lv_obj_set_style_bg_opa(hb, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(hb, lv_color_hex(COL_DARK), 0);
+    lv_obj_add_event_cb(hb, hud_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *hl = label(hb, &lv_font_montserrat_20, COL_WHITE);
+    lv_label_set_text(hl, LV_SYMBOL_EYE_OPEN "  Helmet HUD");
+    lv_obj_center(hl);
+
     char t[64];
     lv_obj_t *f = label(p, &lv_font_montserrat_16, COL_GREY);
     snprintf(t, sizeof(t), "Ace Watch v%s\nDevX key: %s", esp_app_get_description()->version,
              net_has_key() ? "set" : "not set (hold face 3 s)");
     lv_label_set_text(f, t);
     lv_obj_set_style_text_align(f, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(f, LV_ALIGN_BOTTOM_MID, 0, -36);
+    lv_obj_align(f, LV_ALIGN_BOTTOM_MID, 0, -24);
 }
 
 /* ======================= Pages ======================= */

@@ -1,7 +1,9 @@
 #include "settings.h"
+#include <stddef.h>
 #include "nvs.h"
 
-settings_t g_set = { .bright = 2, .volume = 2, .timeout = 1, .live = 0, .raise = 1, .sync = 1 };
+settings_t g_set = { .bright = 2, .volume = 2, .timeout = 1, .live = 0, .raise = 1, .sync = 1,
+                     .hud_flip = 1, .hud_r = 120, .hud_dx = 0, .hud_dy = 0 };
 
 static const uint8_t BRIGHT[4] = {40, 60, 80, 100};
 static const uint8_t VOLUME[3] = {0, 55, 85};
@@ -18,7 +20,14 @@ void settings_load(void)
         if (n < 4) s.live = 0;             /* added in v0.5 */
         if (n < 5) s.raise = 1;            /* added in v0.6 */
         if (n < 6) s.sync = 1;             /* added in v0.7.6 */
-        if (n < sizeof(s)) s.live_ssid[0] = 0;
+        if (n < offsetof(settings_t, hud_flip)) s.live_ssid[0] = 0;
+        if (n < sizeof(s)) {                 /* added in v0.8.0 */
+            s.hud_flip = 1; s.hud_r = 120; s.hud_dx = 0; s.hud_dy = 0;
+        }
+        s.hud_flip &= 3;
+        if (s.hud_r < 60 || s.hud_r > 200) s.hud_r = 120;
+        if (s.hud_dx < -200 || s.hud_dx > 200) s.hud_dx = 0;
+        if (s.hud_dy < -250 || s.hud_dy > 250) s.hud_dy = 0;
         s.live_ssid[sizeof(s.live_ssid) - 1] = 0;
         if (s.live > 2 || (s.live == 2 && !s.live_ssid[0])) s.live = s.live ? 1 : 0;
         s.raise = s.raise ? 1 : 0;
