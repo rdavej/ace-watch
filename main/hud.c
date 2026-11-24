@@ -6,9 +6,11 @@
  * default). Only a round area under the lens is used: black everywhere else, so the
  * AMOLED stays dark and nothing glows outside what the lens shows.
  *
+ * Since v0.9.0 the board runs only the HUD (the watch firmware was removed).
+ *
  * Desk test controls:
  *   tap            next screen: Dash -> Next turn -> Alert -> Call -> Start-up
- *   hold 3 s       set-up: move the circle, change its size, change the flip, exit
+ *   hold 3 s       set-up: move the circle, change its size, change the flip, check for an update
  *
  * Speed, heading, turns and calls are demo data for now; the Atlas Ride app on the
  * phone sends the real ones later.
@@ -23,6 +25,8 @@
 #include "lvgl.h"
 #include "lvgl_private.h"   /* flush / touch hooks for the flip */
 #include "settings.h"
+#include "esp_app_desc.h"
+#include "net.h"
 
 LV_FONT_DECLARE(font_time_86);
 int watch_battery(void);
@@ -432,6 +436,8 @@ static void boot_tick(uint32_t el)
     }
 }
 
+static void setup_info(void);
+
 static void keep_on_top(void)
 {
     lv_obj_t *top = lv_layer_top();
@@ -444,6 +450,8 @@ static void timer_cb(lv_timer_t *t)
     (void)t;
     uint32_t now = lv_tick_get();
     keep_on_top();
+    static uint32_t info_at;
+    if (s_setup && lv_tick_elaps(info_at) > 1000) { info_at = now; setup_info(); }
     if (s_view == V_BOOT) boot_tick(lv_tick_elaps(s_view_t0));
     else demo_tick(now);
 }
@@ -455,12 +463,16 @@ static void setup_info(void)
 {
     if (!s_setup_info) return;
     static const char *const FL[4] = { "No flip", "Up-down", "Left-right", "Both" };
-    char b[80];
-    snprintf(b, sizeof(b), "%s   size %d   x %+d  y %+d", FL[g_set.hud_flip & 3], 2 * g_set.hud_r, g_set.hud_dx, g_set.hud_dy);
+    char b[140];
+    int bat = watch_battery();
+    char bs[12] = "";
+    if (bat >= 0) snprintf(bs, sizeof(bs), "   %d%%", bat);
+    snprintf(b, sizeof(b), "%s   size %d   x %+d  y %+d\nv%s   %s%s", FL[g_set.hud_flip & 3], 2 * g_set.hud_r,
+             g_set.hud_dx, g_set.hud_dy, esp_app_get_description()->version, net_status(), bs);
     lv_label_set_text(s_setup_info, b);
 }
 
-enum { B_UP, B_DOWN, B_LEFT, B_RIGHT, B_SMALLER, B_BIGGER, B_FLIP, B_DONE, B_EXIT };
+enum { B_UP, B_DOWN, B_LEFT, B_RIGHT, B_SMALLER, B_BIGGER, B_FLIP, B_DONE, B_UPDATE };
 
 static void setup_btn_cb(lv_event_t *e)
 {
@@ -480,10 +492,9 @@ static void setup_btn_cb(lv_event_t *e)
         break;
     }
     case B_DONE: setup_close(true); return;
-    case B_EXIT:
-        settings_save();
-        hud_close();
-        return;
+    case B_UPDATE:
+        net_sync_now();   /* Wi-Fi on, clock, update check */
+        break;
     }
     if (g_set.hud_dx < -200) g_set.hud_dx = -200;
     if (g_set.hud_dx > 200) g_set.hud_dx = 200;
@@ -506,7 +517,7 @@ static void setup_btn(int id, const char *t, int x, int y, int w, int h)
     lv_obj_set_style_bg_color(b, lv_color_hex(0x0E2140), 0);
     lv_obj_set_style_bg_color(b, lv_color_hex(0x1F4F8F), LV_STATE_PRESSED);
     lv_obj_set_style_border_width(b, 2, 0);
-    lv_obj_set_style_border_color(b, lv_color_hex(id == B_EXIT ? 0xFF5A5A : COL_ACCENT), 0);
+    lv_obj_set_style_border_color(b, lv_color_hex(COL_ACCENT), 0);
     lv_obj_remove_flag(b, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_GESTURE_BUBBLE);
     lv_obj_add_event_cb(b, setup_btn_cb, LV_EVENT_CLICKED, (void *)(intptr_t)id);
     lv_obj_t *l = text(b, &lv_font_montserrat_20, COL_WHITE, t);
@@ -528,9 +539,9 @@ static void setup_open(void)
     setup_btn(B_DOWN, LV_SYMBOL_DOWN, 173, 350, 64, 56);
     setup_btn(B_SMALLER, LV_SYMBOL_MINUS, 20, 418, 110, 56);
     setup_btn(B_BIGGER, LV_SYMBOL_PLUS, 150, 418, 110, 56);
-    setup_btn(B_EXIT, "Exit", 280, 418, 110, 56);
+    setup_btn(B_UPDATE, LV_SYMBOL_REFRESH, 280, 418, 110, 56);
     s_setup_info = text(s_setup, &lv_font_montserrat_16, COL_GREY, "");
-    lv_obj_align(s_setup_info, LV_ALIGN_BOTTOM_MID, 0, -6);
+    lv_obj_align(s_setup_info, LV_ALIGN_TOP_MID, 0, 150);
     setup_info();
     build_dial();                 /* draws the circle outline */
     show_view(s_view == V_BOOT ? V_DASH : s_view);
