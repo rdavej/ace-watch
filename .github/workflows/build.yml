@@ -46,5 +46,5 @@ jobs:
           fi
           gh release create "v$VER" build/ace_watch.bin version.txt \
             --repo "${{ github.repository }}" \
-            --title "Ace Watch v$VER" \
-            --notes "Firmware v$VER. The watch installs this automatically over Wi-Fi."
+            --title "Atlas HUD v$VER" \
+            --notes "Firmware v$VER. The HUD installs this automatically over Wi-Fi."
